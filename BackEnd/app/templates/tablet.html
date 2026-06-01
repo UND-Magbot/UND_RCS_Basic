@@ -149,7 +149,7 @@ body {
 <!-- 헤더 -->
 <div class="header">
   <div>
-    <div class="header__title">UND RCS</div>
+    <div class="header__title" id="systemNameLabel">UND RCS</div>
     <div class="header__robot">{{ROBOT_NAME}}</div>
   </div>
   <div class="header__right">
@@ -287,6 +287,19 @@ body {
 const API = window.location.origin;
 const ROBOT_ID = {{ROBOT_ID}};
 const ROBOT_IP = "{{ROBOT_IP}}";
+
+/* ── 시스템 이름 동기화 (RCS 설정에서 바꾸면 60초 내 반영) ── */
+async function refreshSystemName() {
+  try {
+    const r = await fetch(API + '/api/settings/system-name', {cache: 'no-store'});
+    if (!r.ok) return;
+    const d = await r.json();
+    const el = document.getElementById('systemNameLabel');
+    if (el && d && d.system_name) el.textContent = d.system_name;
+  } catch (_) {}
+}
+refreshSystemName();
+setInterval(refreshSystemName, 60000);
 
 /* ── 유틸 ── */
 function toast(msg, ms) {
