@@ -245,16 +245,11 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
         cx, cy = charger["x"], charger["y"]
         cyaw = charger.get("ori", 0)
 
-        # 사전 접근 지점 (도킹 지점에서 yaw 반대 방향 1.0m)
-        # 이전 60cm 는 충전소 정면 근처에서 회전 반경 부족으로 도킹 실패 케이스가 있어 100cm 로 조정.
-        APPROACH_DIST = 1.0  # m
-        approach_x = cx - APPROACH_DIST * _math.cos(cyaw)
-        approach_y = cy - APPROACH_DIST * _math.sin(cyaw)
-
-        # 1단계: standard 사전 접근 — best-effort (실패해도 charge 로 직접 진행)
-        # `failed to calc global path` 등 경로 계산 불가 케이스가 자주 발생하므로 무한 재시도 X.
+        # 1단계: standard 로 충전소 좌표 자체로 이동 — 제어패널 dock 과 동일 패턴.
+        # 펌웨어 path planner 가 충전기에 충돌하지 않고 직전에 자연스럽게 정렬한다.
+        # (yaw 반대 방향 N cm 오프셋 좌표로 보냈을 때 path 가 좌측 우회로 잡히던 문제 해결)
         try:
-            std_move = create_move(robot_ip, "standard", approach_x, approach_y, cyaw)
+            std_move = create_move(robot_ip, "standard", cx, cy, cyaw)
             std_result = wait_move(robot_ip, std_move, timeout=60)
             if std_result.get("state") != "succeeded":
                 logger.warning(
