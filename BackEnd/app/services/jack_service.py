@@ -1007,18 +1007,34 @@ def run_route_job(
                     next_poi = get_next_poi(ip)
                     if next_poi is None or next_poi == "return":
                         break
-                    # 경로 / 진행률 갱신 — 이후 _notify 가 stale 한 처음 값으로 덮어쓰지 않도록 먼저 설정
+                    # delivery_no_rack: 잭업 → 이동 → 잭다운 사이클 (simple_move 는 그대로 이동만)
+                    is_delivery = (work_mode == "delivery_no_rack")
+                    total = 3 if is_delivery else 1
                     update_job_status(ip,
                         route=f"{current_wp['name']} → {next_poi['name']}",
-                        current_step=0, total_steps=1,
+                        current_step=0, total_steps=total,
                     )
-                    # 다음 포인트로 standard 이동
-                    _notify("moving", f"{next_poi['name']} 이동 중...", 1)
+
+                    if is_delivery:
+                        # 잭업 (현재 위치에서)
+                        _notify("jacking_up", f"{current_wp['name']} 잭 올리는 중...", 1)
+                        jack_up(ip)
+                        _interruptible_sleep(ip, JACK_WAIT_SEC)
+
+                    # 이동
+                    _notify("moving", f"{next_poi['name']} 이동 중...", 2 if is_delivery else 1)
                     result = safe_move(ip, "standard", next_poi["x"], next_poi["y"], next_poi.get("ori", 0), timeout=120)
                     if result["state"] != "succeeded":
                         msg = f"{next_poi['name']} 이동 실패: {result.get('fail_message', '')}"
                         log_activity("robot", "move_error", msg, source="jack_service")
                         return _fail(msg)
+
+                    if is_delivery:
+                        # 잭다운 (도착 후)
+                        _notify("jacking_down", f"{next_poi['name']} 잭 내리는 중...", 3)
+                        jack_down(ip)
+                        _interruptible_sleep(ip, JACK_WAIT_SEC)
+
                     current_wp = next_poi
 
             _notify("done", f"완료: {route_names}", total_steps)
