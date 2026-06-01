@@ -245,11 +245,14 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
         cx, cy = charger["x"], charger["y"]
         cyaw = charger.get("ori", 0)
 
-        # 1단계: standard 로 충전소 좌표 자체로 이동 — 제어패널 dock 과 동일 패턴.
-        # 펌웨어 path planner 가 충전기에 충돌하지 않고 직전에 자연스럽게 정렬한다.
-        # (yaw 반대 방향 N cm 오프셋 좌표로 보냈을 때 path 가 좌측 우회로 잡히던 문제 해결)
+        # 1단계: standard 로 충전소 정면 50cm 사전 접근 위치 이동 — best-effort.
+        # 도킹 지점(cx, cy)에서 yaw 반대 방향(=충전기 정면) 0.5m 떨어진 위치.
+        # 너무 가까이(0m) 가면 충전기와 부딪힐 우려, 너무 멀리(1m+) 가면 path 우회 가능성 → 0.5m 절충.
+        APPROACH_DIST = 0.5
+        approach_x = cx - APPROACH_DIST * _math.cos(cyaw)
+        approach_y = cy - APPROACH_DIST * _math.sin(cyaw)
         try:
-            std_move = create_move(robot_ip, "standard", cx, cy, cyaw)
+            std_move = create_move(robot_ip, "standard", approach_x, approach_y, cyaw)
             std_result = wait_move(robot_ip, std_move, timeout=60)
             if std_result.get("state") != "succeeded":
                 logger.warning(
