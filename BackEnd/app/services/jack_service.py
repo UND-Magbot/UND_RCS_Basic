@@ -904,13 +904,12 @@ def run_route_job(
         if on_status:
             on_status(status, message)
         logger.info(f"[route-job] {status}: {message}")
+        # route / total_steps / started_at 은 머지로 보존 — 추가 목적지/복귀 단계에서
+        # 외부 update_job_status 로 갱신한 값이 _notify 다음 호출에 덮어쓰이는 버그 방지.
         update_job_status(ip,
             status=status,
             message=message,
-            route=route_names,
             current_step=step,
-            total_steps=total_steps,
-            started_at=_job_status.get(ip, {}).get("started_at", time.time()),
         )
 
     def _fail(msg: str) -> dict:
@@ -1008,6 +1007,11 @@ def run_route_job(
                     next_poi = get_next_poi(ip)
                     if next_poi is None or next_poi == "return":
                         break
+                    # 경로 / 진행률 갱신 — 이후 _notify 가 stale 한 처음 값으로 덮어쓰지 않도록 먼저 설정
+                    update_job_status(ip,
+                        route=f"{current_wp['name']} → {next_poi['name']}",
+                        current_step=0, total_steps=1,
+                    )
                     # 다음 포인트로 standard 이동
                     _notify("moving", f"{next_poi['name']} 이동 중...", 1)
                     result = safe_move(ip, "standard", next_poi["x"], next_poi["y"], next_poi.get("ori", 0), timeout=120)
@@ -1134,25 +1138,40 @@ def run_route_job(
                     jacked_up = True
 
             elif ptype == "charging" or wtype == "charging":
-                # 충전소: 도킹 전 사전 접근 지점(yaw 반대 60cm) 이동 → charge 명령
+                # 충전소: 원거리 사전 접근 → 근거리 사전 접근 → charge 도킹
+                # 충전소 근처에서 출발하면 60cm 위치에서 회전 반경 부족으로 도킹 실패하던 문제 회피.
                 _notify("charging", f"[{i+1}/{total_steps}] {name} 충전소 접근 중...", i+1)
                 cx, cy = wp["x"], wp["y"]
                 cyaw = wp.get("ori", 0)
+                FAR_APPROACH_DIST = 1.5
                 APPROACH_DIST = 0.6
+                far_x = cx - FAR_APPROACH_DIST * math.cos(cyaw)
+                far_y = cy - FAR_APPROACH_DIST * math.sin(cyaw)
                 approach_x = cx - APPROACH_DIST * math.cos(cyaw)
                 approach_y = cy - APPROACH_DIST * math.sin(cyaw)
-                # 1단계: 사전 접근 — best-effort. 실패해도 charge 단계로 진행.
+                # 1단계: 원거리 사전 접근 — best-effort
+                try:
+                    _far_id = create_move(ip, "standard", far_x, far_y, cyaw)
+                    _far_res = wait_move(ip, _far_id, timeout=60)
+                    if _far_res.get("state") != "succeeded":
+                        logger.warning(f"[charge-approach] {ip} 원거리 사전 접근 실패({_far_res.get('fail_message')}) — 근거리 진행")
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[charge-approach] {ip} 원거리 사전 접근 예외: {e} — 근거리 진행")
+                time.sleep(1)
+                # 2단계: 근거리 사전 접근 — best-effort. 실패해도 charge 단계로 진행.
                 try:
                     _std_id = create_move(ip, "standard", approach_x, approach_y, cyaw)
                     _std_res = wait_move(ip, _std_id, timeout=60)
                     if _std_res.get("state") != "succeeded":
-                        logger.warning(f"[charge-approach] {ip} 사전 접근 실패({_std_res.get('fail_message')}) — 직접 도킹")
+                        logger.warning(f"[charge-approach] {ip} 근거리 사전 접근 실패({_std_res.get('fail_message')}) — 직접 도킹")
                 except RuntimeError:
                     raise
                 except Exception as e:
-                    logger.warning(f"[charge-approach] {ip} 사전 접근 예외: {e} — 직접 도킹")
+                    logger.warning(f"[charge-approach] {ip} 근거리 사전 접근 예외: {e} — 직접 도킹")
                 time.sleep(2)
-                # 2단계: 도킹
+                # 3단계: 도킹
                 _notify("charging", f"[{i+1}/{total_steps}] {name} 충전소 도킹 중...", i+1)
                 move_id = create_move(ip, "charge", cx, cy, cyaw, charge_retry_count=3)
                 result = wait_move(ip, move_id, timeout=120)

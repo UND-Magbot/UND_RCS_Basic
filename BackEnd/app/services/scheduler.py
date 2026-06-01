@@ -245,28 +245,49 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
         cx, cy = charger["x"], charger["y"]
         cyaw = charger.get("ori", 0)
 
-        # 사전 접근 지점 (도킹 지점에서 yaw 반대 방향 60cm)
-        APPROACH_DIST = 0.6  # m
+        # 사전 접근 지점 — 도킹 지점에서 yaw 반대 방향
+        # 1차(원거리): 회전 여유 확보용. 충전소가 출발 지점과 너무 가까우면 60cm 위치에서
+        # 로봇 회전 반경이 부족해 도킹 실패 → 먼저 1.5m 떨어져 자세 잡기.
+        # 2차(근거리): 펌웨어 charge 정밀 도킹 직전 정렬용.
+        FAR_APPROACH_DIST = 1.5   # m
+        APPROACH_DIST = 0.6       # m
+        far_x = cx - FAR_APPROACH_DIST * _math.cos(cyaw)
+        far_y = cy - FAR_APPROACH_DIST * _math.sin(cyaw)
         approach_x = cx - APPROACH_DIST * _math.cos(cyaw)
         approach_y = cy - APPROACH_DIST * _math.sin(cyaw)
 
-        # 1단계: standard 사전 접근 — best-effort (실패해도 charge 로 직접 진행)
+        # 1단계: standard 원거리 사전 접근 — best-effort (실패해도 다음 단계 진행)
         # `failed to calc global path` 등 경로 계산 불가 케이스가 자주 발생하므로 무한 재시도 X.
+        try:
+            far_move = create_move(robot_ip, "standard", far_x, far_y, cyaw)
+            far_result = wait_move(robot_ip, far_move, timeout=60)
+            if far_result.get("state") != "succeeded":
+                logger.warning(
+                    f"[scheduler] 원거리 사전 접근 실패({far_result.get('fail_message') or far_result.get('state')}) "
+                    f"— 근거리 단계로 진행"
+                )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"[scheduler] 원거리 사전 접근 예외: {e} — 근거리 단계로 진행")
+        _time.sleep(1)
+
+        # 2단계: standard 근거리 사전 접근 — best-effort
         try:
             std_move = create_move(robot_ip, "standard", approach_x, approach_y, cyaw)
             std_result = wait_move(robot_ip, std_move, timeout=60)
             if std_result.get("state") != "succeeded":
                 logger.warning(
-                    f"[scheduler] 사전 접근 실패({std_result.get('fail_message') or std_result.get('state')}) "
+                    f"[scheduler] 근거리 사전 접근 실패({std_result.get('fail_message') or std_result.get('state')}) "
                     f"— charge 단계로 직접 진행"
                 )
         except RuntimeError:
             raise
         except Exception as e:
-            logger.warning(f"[scheduler] 사전 접근 예외: {e} — charge 단계로 직접 진행")
+            logger.warning(f"[scheduler] 근거리 사전 접근 예외: {e} — charge 단계로 직접 진행")
         _time.sleep(2)
 
-        # 2단계: charge로 도킹 (target_ori 명시, 재시도)
+        # 3단계: charge로 도킹 (target_ori 명시, 재시도)
         for attempt in range(5):
             try:
                 move_id = create_move(robot_ip, "charge", cx, cy, cyaw, charge_retry_count=3)

@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
-from app.routers import user, robot, auth, map, alarm_log, activity_log, backup, log, jack_test, task
+from app.routers import user, robot, auth, map, alarm_log, activity_log, backup, log, jack_test, task, settings
 from app.services.scheduler import init_scheduler, shutdown_scheduler
 # 데드락 감지/양보 기능 비활성화 — 좁은 통로 없는 사이트.
 # 다시 켜려면 아래 import 와 lifespan 의 start/stop 주석을 해제하세요.
@@ -94,6 +94,7 @@ app.include_router(backup.router)
 app.include_router(log.router)
 app.include_router(jack_test.router)
 app.include_router(task.router)
+app.include_router(settings.router)
 
 
 # 정적 파일 서빙 (맵 이미지 등)
