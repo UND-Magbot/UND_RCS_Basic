@@ -247,9 +247,10 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
 
         # 사전 접근 지점 — 도킹 지점에서 yaw 반대 방향
         # 1차(원거리): 회전 여유 확보용. 충전소가 출발 지점과 너무 가까우면 60cm 위치에서
-        # 로봇 회전 반경이 부족해 도킹 실패 → 먼저 1.5m 떨어져 자세 잡기.
+        # 로봇 회전 반경이 부족해 도킹 실패 → 먼저 1.0m 떨어져 자세 잡기.
+        # (이전 1.5m 는 path planner 가 우회로 잡아 좌측으로 가는 케이스 발생 → 1.0m 로 조정)
         # 2차(근거리): 펌웨어 charge 정밀 도킹 직전 정렬용.
-        FAR_APPROACH_DIST = 1.5   # m
+        FAR_APPROACH_DIST = 1.0   # m
         APPROACH_DIST = 0.6       # m
         far_x = cx - FAR_APPROACH_DIST * _math.cos(cyaw)
         far_y = cy - FAR_APPROACH_DIST * _math.sin(cyaw)

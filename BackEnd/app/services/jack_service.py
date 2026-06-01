@@ -1140,10 +1140,11 @@ def run_route_job(
             elif ptype == "charging" or wtype == "charging":
                 # 충전소: 원거리 사전 접근 → 근거리 사전 접근 → charge 도킹
                 # 충전소 근처에서 출발하면 60cm 위치에서 회전 반경 부족으로 도킹 실패하던 문제 회피.
+                # (이전 1.5m 는 path planner 우회로 좌측 이동 케이스 → 1.0m 로 조정)
                 _notify("charging", f"[{i+1}/{total_steps}] {name} 충전소 접근 중...", i+1)
                 cx, cy = wp["x"], wp["y"]
                 cyaw = wp.get("ori", 0)
-                FAR_APPROACH_DIST = 1.5
+                FAR_APPROACH_DIST = 1.0
                 APPROACH_DIST = 0.6
                 far_x = cx - FAR_APPROACH_DIST * math.cos(cyaw)
                 far_y = cy - FAR_APPROACH_DIST * math.sin(cyaw)
