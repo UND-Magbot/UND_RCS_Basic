@@ -245,9 +245,9 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
         cx, cy = charger["x"], charger["y"]
         cyaw = charger.get("ori", 0)
 
-        # 1단계: standard 로 충전소 정면 1.0m 사전 접근 위치 이동 — best-effort.
-        # 도킹 지점(cx, cy)에서 yaw 반대 방향(=충전기 정면) 1.0m 떨어진 위치.
-        APPROACH_DIST = 1.0
+        # 1단계: standard 로 충전소 정면 0.85m 사전 접근 위치 이동 — best-effort.
+        # 도킹 지점(cx, cy)에서 yaw 반대 방향(=충전기 정면) 0.85m 떨어진 위치.
+        APPROACH_DIST = 0.85
         approach_x = cx - APPROACH_DIST * _math.cos(cyaw)
         approach_y = cy - APPROACH_DIST * _math.sin(cyaw)
         try:

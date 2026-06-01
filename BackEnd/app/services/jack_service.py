@@ -1154,11 +1154,11 @@ def run_route_job(
                     jacked_up = True
 
             elif ptype == "charging" or wtype == "charging":
-                # 충전소: 도킹 지점에서 yaw 반대 방향(=충전기 정면) 1.0m 사전 접근 → charge.
+                # 충전소: 도킹 지점에서 yaw 반대 방향(=충전기 정면) 0.85m 사전 접근 → charge.
                 _notify("charging", f"[{i+1}/{total_steps}] {name} 충전소 접근 중...", i+1)
                 cx, cy = wp["x"], wp["y"]
                 cyaw = wp.get("ori", 0)
-                APPROACH_DIST = 1.0
+                APPROACH_DIST = 0.85
                 approach_x = cx - APPROACH_DIST * math.cos(cyaw)
                 approach_y = cy - APPROACH_DIST * math.sin(cyaw)
                 # 1단계: 사전 접근 — best-effort. 실패해도 charge 단계로 진행.
