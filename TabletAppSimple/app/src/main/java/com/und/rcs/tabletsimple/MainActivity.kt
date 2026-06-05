@@ -61,17 +61,20 @@ class MainActivity : AppCompatActivity() {
         val btnSize = (48 * dp).toInt()
         val btnMargin = (12 * dp).toInt()
 
+        // 어두운 반투명 배경 — 흰 에러 페이지 위에서도 잘 보이도록
         val btnBg = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(Color.argb(48, 255, 255, 255))
-            setStroke((1.5f * dp).toInt(), Color.argb(80, 255, 255, 255))
+            setColor(Color.argb(180, 0, 0, 0))
+            setStroke((1.5f * dp).toInt(), Color.argb(220, 255, 255, 255))
         }
         val settingsBtn = Button(this).apply {
             text = "⚙"
-            setTextColor(Color.argb(200, 255, 255, 255))
+            setTextColor(Color.WHITE)
             textSize = 22f
             background = btnBg
             setPadding(0, 0, 0, 0)
+            // 항상 최상단 — WebView 가 hardware-accelerated 인 환경에서도 가려지지 않게
+            elevation = 16f * dp
             setOnClickListener {
                 val prefs = getSharedPreferences("config", Context.MODE_PRIVATE)
                 showConfigDialog(prefs) { url, id -> loadTablet(url, id) }
@@ -82,6 +85,7 @@ class MainActivity : AppCompatActivity() {
             setMargins(btnMargin, btnMargin, 0, 0)
         }
         container.addView(settingsBtn, btnParams)
+        settingsBtn.bringToFront()
 
         setContentView(container)
 
