@@ -17,47 +17,6 @@
     justify-content: center;
   }
 
-  /* 좌상단 배터리 */
-  .battery {
-    position: fixed;
-    top: 16px;
-    left: 20px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: clamp(1rem, 2.5vw, 1.6rem);
-    font-weight: 600;
-    color: rgba(255, 255, 255, 0.75);
-    z-index: 10;
-  }
-  .battery__icon {
-    position: relative;
-    width: clamp(38px, 6vw, 56px);
-    height: clamp(20px, 3vw, 28px);
-    border: 2px solid rgba(255, 255, 255, 0.6);
-    border-radius: 4px;
-    background: transparent;
-  }
-  .battery__icon::after {
-    content: '';
-    position: absolute;
-    right: -6px;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 4px;
-    height: 50%;
-    background: rgba(255, 255, 255, 0.6);
-    border-radius: 0 2px 2px 0;
-  }
-  .battery__fill {
-    height: 100%;
-    background: linear-gradient(135deg, #0be881, #05c46b);
-    border-radius: 2px;
-    transition: width 0.4s ease, background 0.4s ease;
-  }
-  .battery--low .battery__fill { background: linear-gradient(135deg, #ffc048, #ff9f1a); }
-  .battery--critical .battery__fill { background: linear-gradient(135deg, #ff6b6b, #e94560); }
-
   /* 시스템 이름 (상단 가운데) */
   .system-name {
     position: fixed;
@@ -152,12 +111,6 @@
 </head>
 <body>
 
-<!-- 좌상단 배터리 -->
-<div class="battery" id="batteryBox">
-  <div class="battery__icon"><div class="battery__fill" id="batteryFill" style="width:0%;"></div></div>
-  <span id="batteryText">--%</span>
-</div>
-
 <!-- 상단 시스템 이름 -->
 <div class="system-name" id="systemName">UND RCS</div>
 
@@ -226,22 +179,6 @@
   function setDestination(name) {
     document.getElementById('destination').textContent = name || '-';
   }
-  function setBattery(pct) {
-    const fill = document.getElementById('batteryFill');
-    const text = document.getElementById('batteryText');
-    const box = document.getElementById('batteryBox');
-    if (typeof pct !== 'number') {
-      fill.style.width = '0%';
-      text.textContent = '--%';
-      box.classList.remove('battery--low', 'battery--critical');
-      return;
-    }
-    const clamped = Math.max(0, Math.min(100, pct));
-    fill.style.width = clamped + '%';
-    text.textContent = Math.round(clamped) + '%';
-    box.classList.toggle('battery--critical', clamped < 15);
-    box.classList.toggle('battery--low', clamped >= 15 && clamped < 30);
-  }
   function showOffline(on) {
     document.getElementById('offlineBanner').classList.toggle('offline-banner--show', !!on);
   }
@@ -258,26 +195,16 @@
   refreshSystemName();
   setInterval(refreshSystemName, 60000);
 
-  // 작업 상태 폴링
+  // 작업 상태 폴링 — { ok, job } 반환. 네트워크 실패면 ok=false 로 오프라인 판정.
   async function fetchJobStatus() {
-    if (!ROBOT_IP) return null;
+    if (!ROBOT_IP) return { ok: false, job: null };
     try {
       const r = await fetch(API + '/api/robots/job-status/' + ROBOT_IP, {cache: 'no-store'});
-      if (!r.ok) return null;
-      return await r.json();
+      if (!r.ok) return { ok: false, job: null };
+      const job = await r.json();
+      return { ok: true, job };
     } catch (_) {
-      return null;
-    }
-  }
-  // 빠른 상태 (배터리, 온라인 여부)
-  async function fetchQuickStatus() {
-    if (!ROBOT_IP) return null;
-    try {
-      const r = await fetch(API + '/api/robots/quick-status/' + ROBOT_IP, {cache: 'no-store'});
-      if (!r.ok) return null;
-      return await r.json();
-    } catch (_) {
-      return null;
+      return { ok: false, job: null };
     }
   }
 
@@ -293,25 +220,15 @@
     return '';
   }
 
-  let lastOnline = true;
   async function tick() {
-    const [job, quick] = await Promise.all([fetchJobStatus(), fetchQuickStatus()]);
-    const online = !!(quick && quick.online !== false);
-    if (!online) {
+    const { ok, job } = await fetchJobStatus();
+    if (!ok) {
       showOffline(true);
       setStatus('오프라인', 'status--offline', false);
       setDestination('-');
-      // 배터리 표시는 이전 값 유지
-    } else {
-      showOffline(false);
+      return;
     }
-
-    if (quick && typeof quick.battery === 'number') {
-      setBattery(quick.battery);
-    }
-
-    if (!online) { lastOnline = false; return; }
-    lastOnline = true;
+    showOffline(false);
 
     if (!job || !job.status || job.status === 'idle') {
       setStatus(STATUS_LABEL.idle, STATUS_CLASS.idle, false);
