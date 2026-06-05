@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>UND RCS — {{ROBOT_NAME}}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Noto Sans KR', system-ui, sans-serif;
+    background: #0a0e1a;
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 좌상단 배터리 */
+  .battery {
+    position: fixed;
+    top: 16px;
+    left: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: clamp(1rem, 2.5vw, 1.6rem);
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.75);
+    z-index: 10;
+  }
+  .battery__icon {
+    position: relative;
+    width: clamp(38px, 6vw, 56px);
+    height: clamp(20px, 3vw, 28px);
+    border: 2px solid rgba(255, 255, 255, 0.6);
+    border-radius: 4px;
+    background: transparent;
+  }
+  .battery__icon::after {
+    content: '';
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: 50%;
+    background: rgba(255, 255, 255, 0.6);
+    border-radius: 0 2px 2px 0;
+  }
+  .battery__fill {
+    height: 100%;
+    background: linear-gradient(135deg, #0be881, #05c46b);
+    border-radius: 2px;
+    transition: width 0.4s ease, background 0.4s ease;
+  }
+  .battery--low .battery__fill { background: linear-gradient(135deg, #ffc048, #ff9f1a); }
+  .battery--critical .battery__fill { background: linear-gradient(135deg, #ff6b6b, #e94560); }
+
+  /* 시스템 이름 (상단 가운데) */
+  .system-name {
+    position: fixed;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: clamp(1.1rem, 2.6vw, 1.6rem);
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.55);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    max-width: 60vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+  }
+
+  /* 우상단 로봇 이름 */
+  .robot-name {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    font-size: clamp(1rem, 2.4vw, 1.5rem);
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  /* 중앙 — 가장 큰 텍스트 */
+  .main {
+    width: 100%;
+    max-width: 1100px;
+    padding: 0 24px;
+    text-align: center;
+  }
+  .status {
+    font-size: clamp(3.5rem, 13vw, 9rem);
+    font-weight: 900;
+    line-height: 1.1;
+    margin-bottom: clamp(20px, 4vh, 60px);
+    letter-spacing: -0.02em;
+    word-break: keep-all;
+  }
+  /* 상태별 색상 */
+  .status--moving { color: #5cb8ff; }
+  .status--waiting { color: #ffc048; }
+  .status--waitingConfirm { color: #ffc048; }
+  .status--charging { color: #00d2d3; }
+  .status--idle { color: #888; }
+  .status--done { color: #0be881; }
+  .status--error { color: #e94560; }
+  .status--offline { color: #555; }
+
+  /* 목적지 */
+  .destination {
+    font-size: clamp(2rem, 6vw, 4rem);
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.85);
+    word-break: keep-all;
+    white-space: pre-line;
+  }
+  .destination__label {
+    display: block;
+    font-size: clamp(1rem, 2vw, 1.4rem);
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.4);
+    margin-bottom: 8px;
+    letter-spacing: 0.05em;
+  }
+
+  /* 펄스 애니메이션 (이동 중 등) */
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+
+  /* 오프라인 배너 */
+  .offline-banner {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #2c2c3a;
+    color: rgba(255, 255, 255, 0.6);
+    text-align: center;
+    padding: 10px;
+    font-size: clamp(0.9rem, 2vw, 1.2rem);
+  }
+  .offline-banner--show { display: block; }
+</style>
+</head>
+<body>
+
+<!-- 좌상단 배터리 -->
+<div class="battery" id="batteryBox">
+  <div class="battery__icon"><div class="battery__fill" id="batteryFill" style="width:0%;"></div></div>
+  <span id="batteryText">--%</span>
+</div>
+
+<!-- 상단 시스템 이름 -->
+<div class="system-name" id="systemName">UND RCS</div>
+
+<!-- 우상단 로봇 이름 -->
+<div class="robot-name">{{ROBOT_NAME}}</div>
+
+<!-- 메인 -->
+<div class="main">
+  <div class="status idle" id="status">연결 중...</div>
+  <div class="destination">
+    <span class="destination__label" id="destinationLabel">목적지</span>
+    <span id="destination">-</span>
+  </div>
+</div>
+
+<!-- 오프라인 -->
+<div class="offline-banner" id="offlineBanner">서버 재연결 중...</div>
+
+<script>
+  const API = window.location.origin;
+  const ROBOT_ID = {{ROBOT_ID}};
+  const ROBOT_IP = "{{ROBOT_IP}}";
+
+  // 백엔드 status → 화면 라벨 / 스타일
+  const STATUS_LABEL = {
+    idle: '대기 중',
+    started: '작업 시작',
+    aligning: '정렬 중',
+    jacking_up: '잭 올리는 중',
+    jacking_down: '잭 내리는 중',
+    moving: '이동 중',
+    moving_to_dropoff: '이동 중',
+    charging: '충전소 도킹 중',
+    returning: '충전소 복귀 중',
+    waiting: '대기 중',
+    waiting_confirm: '출발 대기',
+    waiting_confirm_return: '복귀 대기',
+    waiting_next_or_return: '다음 포인트 대기',
+    done: '완료',
+    error: '오류',
+    failed: '실패',
+  };
+  const STATUS_CLASS = {
+    moving: 'status--moving',
+    moving_to_dropoff: 'status--moving',
+    returning: 'status--moving',
+    waiting: 'status--waiting',
+    waiting_confirm: 'status--waitingConfirm',
+    waiting_confirm_return: 'status--waitingConfirm',
+    waiting_next_or_return: 'status--waitingConfirm',
+    charging: 'status--charging',
+    aligning: 'status--moving',
+    jacking_up: 'status--waiting',
+    jacking_down: 'status--waiting',
+    done: 'status--done',
+    error: 'status--error',
+    failed: 'status--error',
+    idle: 'status--idle',
+  };
+
+  function setStatus(label, klass, pulse) {
+    const el = document.getElementById('status');
+    el.textContent = label;
+    el.className = 'status ' + (klass || 'status--idle') + (pulse ? ' pulse' : '');
+  }
+  function setDestination(name) {
+    document.getElementById('destination').textContent = name || '-';
+  }
+  function setBattery(pct) {
+    const fill = document.getElementById('batteryFill');
+    const text = document.getElementById('batteryText');
+    const box = document.getElementById('batteryBox');
+    if (typeof pct !== 'number') {
+      fill.style.width = '0%';
+      text.textContent = '--%';
+      box.classList.remove('battery--low', 'battery--critical');
+      return;
+    }
+    const clamped = Math.max(0, Math.min(100, pct));
+    fill.style.width = clamped + '%';
+    text.textContent = Math.round(clamped) + '%';
+    box.classList.toggle('battery--critical', clamped < 15);
+    box.classList.toggle('battery--low', clamped >= 15 && clamped < 30);
+  }
+  function showOffline(on) {
+    document.getElementById('offlineBanner').classList.toggle('offline-banner--show', !!on);
+  }
+
+  // 시스템 이름 (RCS 설정 동기화)
+  async function refreshSystemName() {
+    try {
+      const r = await fetch(API + '/api/settings/system-name', {cache: 'no-store'});
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d && d.system_name) document.getElementById('systemName').textContent = d.system_name;
+    } catch (_) {}
+  }
+  refreshSystemName();
+  setInterval(refreshSystemName, 60000);
+
+  // 작업 상태 폴링
+  async function fetchJobStatus() {
+    if (!ROBOT_IP) return null;
+    try {
+      const r = await fetch(API + '/api/robots/job-status/' + ROBOT_IP, {cache: 'no-store'});
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (_) {
+      return null;
+    }
+  }
+  // 빠른 상태 (배터리, 온라인 여부)
+  async function fetchQuickStatus() {
+    if (!ROBOT_IP) return null;
+    try {
+      const r = await fetch(API + '/api/robots/quick-status/' + ROBOT_IP, {cache: 'no-store'});
+      if (!r.ok) return null;
+      return await r.json();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function pickDestinationName(job) {
+    // route 가 "A → B" 형식이면 마지막을, 아니면 message 에서 추출하거나 그냥 route 전체.
+    if (!job) return '';
+    const route = (job.route || '').trim();
+    if (route) {
+      const parts = route.split('→').map(s => s.trim()).filter(Boolean);
+      if (parts.length > 1) return parts[parts.length - 1];
+      return parts[0] || '';
+    }
+    return '';
+  }
+
+  let lastOnline = true;
+  async function tick() {
+    const [job, quick] = await Promise.all([fetchJobStatus(), fetchQuickStatus()]);
+    const online = !!(quick && quick.online !== false);
+    if (!online) {
+      showOffline(true);
+      setStatus('오프라인', 'status--offline', false);
+      setDestination('-');
+      // 배터리 표시는 이전 값 유지
+    } else {
+      showOffline(false);
+    }
+
+    if (quick && typeof quick.battery === 'number') {
+      setBattery(quick.battery);
+    }
+
+    if (!online) { lastOnline = false; return; }
+    lastOnline = true;
+
+    if (!job || !job.status || job.status === 'idle') {
+      setStatus(STATUS_LABEL.idle, STATUS_CLASS.idle, false);
+      setDestination('-');
+      return;
+    }
+
+    const st = job.status;
+    const label = STATUS_LABEL[st] || st;
+    const klass = STATUS_CLASS[st] || 'status--idle';
+    const pulse = ['moving', 'moving_to_dropoff', 'returning', 'aligning', 'charging'].includes(st);
+    setStatus(label, klass, pulse);
+    setDestination(pickDestinationName(job));
+  }
+
+  tick();
+  setInterval(tick, 2000);
+</script>
+</body>
+</html>

@@ -958,6 +958,22 @@ def api_stats_route_duration(
 # ══════════════════════════════════════
 
 _TABLET_TEMPLATE = Path(__file__).parent.parent / "templates" / "tablet.html"
+_TABLET_SIMPLE_TEMPLATE = Path(__file__).parent.parent / "templates" / "tablet_simple.html"
+
+
+@router.get("/tablet-simple/{robot_id}", response_class=HTMLResponse)
+def tablet_simple_page(robot_id: int, db: Session = Depends(get_db)):
+    """단순 이동 로봇용 태블릿 페이지 — 상태 / 목적지만 크게 표시"""
+    robot = db.query(Robot).filter(Robot.id == robot_id).first()
+    robot_name = robot.name if robot else f"Robot #{robot_id}"
+    robot_ip = robot.ip_address if robot else ""
+
+    html = _TABLET_SIMPLE_TEMPLATE.read_text(encoding="utf-8")
+    html = html.replace("{{ROBOT_NAME}}", robot_name)
+    html = html.replace("{{ROBOT_ID}}", str(robot_id))
+    html = html.replace("{{ROBOT_IP}}", robot_ip)
+    return HTMLResponse(content=html)
+
 
 @router.get("/tablet/{robot_id}", response_class=HTMLResponse)
 def tablet_page(robot_id: int, db: Session = Depends(get_db)):
