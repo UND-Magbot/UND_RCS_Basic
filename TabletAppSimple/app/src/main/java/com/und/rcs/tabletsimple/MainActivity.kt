@@ -3,14 +3,20 @@ package com.und.rcs.tabletsimple
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.JavascriptInterface
+import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
@@ -39,7 +45,45 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         webView = WebView(this)
-        setContentView(webView)
+
+        // WebView 위에 네이티브 설정 버튼을 오버레이 — FrameLayout 컨테이너 사용
+        val container = FrameLayout(this)
+        container.addView(
+            webView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        // 좌상단 설정 버튼 (반투명 원형 톱니바퀴)
+        val dp = resources.displayMetrics.density
+        val btnSize = (48 * dp).toInt()
+        val btnMargin = (12 * dp).toInt()
+
+        val btnBg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.argb(48, 255, 255, 255))
+            setStroke((1.5f * dp).toInt(), Color.argb(80, 255, 255, 255))
+        }
+        val settingsBtn = Button(this).apply {
+            text = "⚙"
+            setTextColor(Color.argb(200, 255, 255, 255))
+            textSize = 22f
+            background = btnBg
+            setPadding(0, 0, 0, 0)
+            setOnClickListener {
+                val prefs = getSharedPreferences("config", Context.MODE_PRIVATE)
+                showConfigDialog(prefs) { url, id -> loadTablet(url, id) }
+            }
+        }
+        val btnParams = FrameLayout.LayoutParams(btnSize, btnSize).apply {
+            gravity = Gravity.TOP or Gravity.START
+            setMargins(btnMargin, btnMargin, 0, 0)
+        }
+        container.addView(settingsBtn, btnParams)
+
+        setContentView(container)
 
         hideSystemUI()
 
