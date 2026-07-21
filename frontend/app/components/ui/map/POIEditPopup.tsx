@@ -12,6 +12,7 @@ const poiTypes: { value: POIType; label: string }[] = [
 const rackSizes: { value: RackSize; label: string; dims: string }[] = [
   { value: "S600", label: "S600 (큰 랙)", dims: "0.83 × 0.87m" },
   { value: "S300", label: "S300 (작은 랙)", dims: "0.73 × 0.74m" },
+  { value: "LG", label: "LG (longjack용)", dims: "0.70 × 0.50m" },
 ];
 
 export function POIEditPopup({

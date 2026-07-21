@@ -34,6 +34,18 @@ RACK_SPECS: dict[str, dict] = {
         "foot_radius": 0.025,
         "cargo_to_jack_front_edge_min_distance": 0.05,
     },
+    # 🆕 LG — longjack 로봇 전용 랙 (2026-07 실측: align_with_rack 성공 확인)
+    "LG": {
+        "width": 0.70, "depth": 0.50,
+        "margin": [0.02, 0.02, 0.02, 0.02],
+        "alignment": "center",
+        "alignment_margin_back": 0.02,
+        "extra_leg_offset": 0.0,
+        "leg_shape": "round",
+        "leg_size": 0.05,
+        "foot_radius": 0.02,
+        "cargo_to_jack_front_edge_min_distance": 0.05,
+    },
 }
 
 # 등록 안 된 사이즈의 폴백 (S300 단일 spec 검증된 값)

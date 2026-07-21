@@ -1103,21 +1103,31 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                 f"carto_map: {len(mapping_data.get('carto_map', ''))}자, "
                 f"오버레이: {len(overlay_data.get('features', []))}개")
 
-    # ── 3) jack POI가 있으면 rack.specs 자동 설정 — 로봇 모델명 기준 ──
+    # ── 3) jack POI가 있으면 rack.specs 자동 설정 — 맵의 POI rack_size 집합 기준 ──
     if jack_pois:
         try:
-            # 대상 로봇의 model 조회 → 모델명에서 사이즈(S300/S600) 자동 매칭 → spec 1개
-            from app.constants.rack_specs import build_rack_specs_for_robot_model, spec_name_for_robot_model
-            _target_robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
-            _model = _target_robot.model if _target_robot else None
-            _specs_list = build_rack_specs_for_robot_model(_model)
-            _rack_specs = {"rack.specs": _specs_list}
+            # 맵의 활성 POI 들에 지정된 rack_size 종류만큼 spec 등록
+            # (POI 별 rack_size 를 UI 에서 지정 → 하나의 로봇으로 여러 사이즈 랙 지원)
+            from app.constants.rack_specs import (
+                build_rack_specs_for_map, build_rack_specs_for_robot_model,
+                collect_rack_sizes_in_map, spec_name_for_robot_model,
+            )
+            sizes = collect_rack_sizes_in_map(db, saved_map_id)
+            if sizes:
+                _specs_list = build_rack_specs_for_map(db, saved_map_id)
+                _tag = f"map sizes={sorted(sizes)}"
+            else:
+                # 맵에 rack_size 지정된 POI 가 없으면 로봇 모델 기준 폴백
+                _target_robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+                _model = _target_robot.model if _target_robot else None
+                _specs_list = build_rack_specs_for_robot_model(_model)
+                _tag = f"model={_model} spec={spec_name_for_robot_model(_model)} (fallback)"
             http_requests.patch(
                 f"http://{robot_ip}:8090/system/settings/user",
                 headers={"Authorization": f"Secret {target_secret}"},
-                json=_rack_specs, timeout=5,
+                json={"rack.specs": _specs_list}, timeout=5,
             )
-            logger.info(f"[sync] rack.specs 자동 설정 완료 → {robot_ip} (model={_model}, spec={spec_name_for_robot_model(_model)})")
+            logger.info(f"[sync] rack.specs 자동 설정 완료 → {robot_ip} ({_tag}, count={len(_specs_list)})")
         except Exception as e:
             logger.warning(f"[sync] rack.specs 설정 실패: {e}")
 
@@ -1512,18 +1522,28 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
         logger.error(f"[sync-overlays] overlay PATCH 실패: {e}")
         raise HTTPException(status_code=500, detail=f"overlay 전송 실패: {e}")
 
-    # jack POI가 있으면 rack.specs 자동 설정
+    # jack POI가 있으면 rack.specs 자동 설정 — 맵의 POI rack_size 집합 기준
     if jack_pois:
         try:
-            from app.constants.rack_specs import build_rack_specs_for_robot_model, spec_name_for_robot_model
-            _target_robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
-            _model = _target_robot.model if _target_robot else None
+            from app.constants.rack_specs import (
+                build_rack_specs_for_map, build_rack_specs_for_robot_model,
+                collect_rack_sizes_in_map, spec_name_for_robot_model,
+            )
+            sizes = collect_rack_sizes_in_map(db, map_id)
+            if sizes:
+                _specs_list = build_rack_specs_for_map(db, map_id)
+                _tag = f"map sizes={sorted(sizes)}"
+            else:
+                _target_robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+                _model = _target_robot.model if _target_robot else None
+                _specs_list = build_rack_specs_for_robot_model(_model)
+                _tag = f"model={_model} spec={spec_name_for_robot_model(_model)} (fallback)"
             http_requests.patch(
                 f"http://{robot_ip}:8090/system/settings/user",
                 headers={"Authorization": f"Secret {target_secret}"},
-                json={"rack.specs": build_rack_specs_for_robot_model(_model)}, timeout=5,
+                json={"rack.specs": _specs_list}, timeout=5,
             )
-            logger.info(f"[sync-overlays] rack.specs 자동 설정 완료 → {robot_ip} (model={_model}, spec={spec_name_for_robot_model(_model)})")
+            logger.info(f"[sync-overlays] rack.specs 자동 설정 완료 → {robot_ip} ({_tag}, count={len(_specs_list)})")
         except Exception as e:
             logger.warning(f"[sync-overlays] rack.specs 설정 실패: {e}")
 

@@ -2,7 +2,7 @@ export type MapTool = "select" | "point" | "jackPoint" | "line" | "curveLine" | 
 
 export type POIType = "waypoint" | "standby" | "charging" | "firewall" | "jack";
 
-export type RackSize = "S600" | "S300";
+export type RackSize = "S600" | "S300" | "LG";
 
 export type LoadType = "normal" | "heavy";
 
