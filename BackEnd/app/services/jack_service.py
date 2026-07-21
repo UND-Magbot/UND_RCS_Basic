@@ -469,6 +469,109 @@ def robot_patch(ip: str, path: str, json_body: dict) -> dict:
     return r.json()
 
 
+# ── 도착 위치 정확도 검증 (simple_move 전용) ────────────────────────
+POSITION_ACCURACY_M = 0.01        # 도착 오차 목표 (1cm)
+POSITION_MAX_RETRIES = 2          # 오차 초과 시 최대 재이동 횟수
+POSE_WS_TIMEOUT = 3.0             # /tracked_pose 조회 최대 대기 (s)
+
+
+def _get_current_pose(robot_ip: str, timeout: float = POSE_WS_TIMEOUT) -> tuple[float, float] | None:
+    """로봇 실좌표 (x, y) 를 /tracked_pose WS 로 1회 조회. 실패 시 None.
+
+    HyunDai 프로젝트의 _get_robot_pose 를 참고 — try/finally 로 socket close 보장.
+    """
+    from websocket import create_connection  # type: ignore
+    import json as _json
+    ws = None
+    try:
+        ws = create_connection(f"ws://{robot_ip}:8090/ws/v2/topics", timeout=timeout)
+        ws.send(_json.dumps({"enable_topic": "/tracked_pose"}))
+        ws.settimeout(timeout)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                raw = ws.recv()
+            except Exception:
+                break
+            if not raw:
+                continue
+            try:
+                pkt = _json.loads(raw)
+            except Exception:
+                continue
+            if pkt.get("topic") == "/tracked_pose":
+                pos = pkt.get("pos")
+                if isinstance(pos, (list, tuple)) and len(pos) >= 2:
+                    return float(pos[0]), float(pos[1])
+    except Exception as e:
+        logger.warning(f"[pose_verify] {robot_ip} pose 조회 실패: {e}")
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+    return None
+
+
+def _move_with_accuracy_verify(ip: str, name: str, x: float, y: float, ori: float,
+                                target_accuracy: float = POSITION_ACCURACY_M,
+                                max_retries: int = POSITION_MAX_RETRIES) -> dict:
+    """simple_move 용 정밀 이동 + 도착 오차 검증 + 재시도.
+
+    흐름: safe_move (target_accuracy 포함) → /tracked_pose 로 실좌표 조회
+         → 오차 > target_accuracy 이면 같은 좌표로 최대 max_retries 회 재이동.
+    최종 오차가 초과되어도 결과는 그대로 반환 (activity_log 에 경고 기록, 흐름은 진행).
+    """
+    from app.crud.activity_log import log_activity
+    last_result: dict = {}
+    for attempt in range(max_retries + 1):
+        # 이동 (로봇 펌웨어 자체가 target_accuracy 이내 도달 시도)
+        last_result = safe_move(ip, "standard", x, y, ori,
+                                target_accuracy=target_accuracy, timeout=120)
+        if last_result.get("state") != "succeeded":
+            return last_result  # 이동 자체 실패 — 후처리 상위에 위임
+
+        # 실제 도착 좌표 확인
+        pose = _get_current_pose(ip)
+        if pose is None:
+            logger.warning(f"[pose_verify] {ip} {name}: pose 조회 실패 — 검증 skip")
+            return last_result
+
+        import math as _m
+        dx, dy = pose[0] - x, pose[1] - y
+        err = _m.hypot(dx, dy)
+        err_mm = err * 1000
+        threshold_mm = target_accuracy * 1000
+
+        if err <= target_accuracy:
+            if attempt > 0:
+                log_activity(
+                    "robot", "position_accuracy_ok",
+                    f"{name} 재시도 {attempt}회 후 정확도 확보 (오차 {err_mm:.0f}mm ≤ {threshold_mm:.0f}mm)",
+                    source="jack_service",
+                )
+            logger.info(f"[pose_verify] {ip} {name} OK — 오차 {err_mm:.0f}mm ≤ {threshold_mm:.0f}mm")
+            return last_result
+
+        # 오차 초과
+        logger.warning(
+            f"[pose_verify] {ip} {name} 오차 {err_mm:.0f}mm > {threshold_mm:.0f}mm "
+            f"(시도 {attempt+1}/{max_retries+1})"
+        )
+        if attempt >= max_retries:
+            log_activity(
+                "robot", "position_accuracy_warning",
+                f"{name} 도착 오차 {err*100:.1f}cm > {target_accuracy*100:.1f}cm "
+                f"(재시도 {max_retries}회 후에도 미달성 — 진행)",
+                source="jack_service",
+            )
+            return last_result
+        # 다음 loop 에서 재이동
+
+    return last_result
+
+
 def create_move(ip: str, move_type: str, target_x: float, target_y: float,
                 target_ori: float = 0, retries: int = 5, **extra) -> int:
     # Zone 사전 락 — 이번 이동이 zone(좁은 통로 등)을 지나가면 다른 로봇 점유 해제까지 대기.
@@ -1007,9 +1110,14 @@ def run_route_job(
                 wtype = wp["waypoint_type"]
                 wait_sec = wp.get("wait_sec", 0)
 
-                # 이동
+                # 이동 — simple_move 는 도착 정확도 1cm 검증 + 최대 2회 재이동
                 _notify("moving", f"[{i+1}/{total_steps}] {name} 이동 중...", i+1)
-                result = safe_move(ip, "standard", wp["x"], wp["y"], wp.get("ori", 0), timeout=120)
+                if work_mode == "simple_move":
+                    result = _move_with_accuracy_verify(
+                        ip, name, wp["x"], wp["y"], wp.get("ori", 0),
+                    )
+                else:
+                    result = safe_move(ip, "standard", wp["x"], wp["y"], wp.get("ori", 0), timeout=120)
                 if result["state"] != "succeeded":
                     msg = f"{name} 이동 실패: {result.get('fail_message', '')}"
                     log_activity("robot", "move_error", msg, source="jack_service")
@@ -1072,9 +1180,14 @@ def run_route_job(
                         jack_up(ip)
                         _interruptible_sleep(ip, JACK_WAIT_SEC)
 
-                    # 이동
+                    # 이동 — simple_move 는 도착 정확도 1cm 검증 + 최대 2회 재이동
                     _notify("moving", f"{next_poi['name']} 이동 중...", 2 if is_delivery else 1)
-                    result = safe_move(ip, "standard", next_poi["x"], next_poi["y"], next_poi.get("ori", 0), timeout=120)
+                    if not is_delivery:  # = simple_move (delivery_no_rack 아니면 simple_move 만 남음)
+                        result = _move_with_accuracy_verify(
+                            ip, next_poi["name"], next_poi["x"], next_poi["y"], next_poi.get("ori", 0),
+                        )
+                    else:
+                        result = safe_move(ip, "standard", next_poi["x"], next_poi["y"], next_poi.get("ori", 0), timeout=120)
                     if result["state"] != "succeeded":
                         msg = f"{next_poi['name']} 이동 실패: {result.get('fail_message', '')}"
                         log_activity("robot", "move_error", msg, source="jack_service")
