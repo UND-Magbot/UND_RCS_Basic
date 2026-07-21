@@ -143,13 +143,52 @@ export function ActiveJobsPanel({ liveRobots, areaId }: Props) {
     if (!confirm(msg)) return;
     try { await fetch(`${API}/api/robots/remote/force-return/${ip}`, { method: "POST" }); } catch {}
   };
+  const handleForceReturnAll = async () => {
+    const n = activeJobs.length;
+    if (n === 0) return;
+    const names = activeJobs.map((j) => j.name).join(", ");
+    const msg = `전체 강제 종료하시겠습니까?\n\n대상: ${n}대 (${names})\n\n각 로봇의 작업 종류에 따라 랙 보관 / 잭 내림 후 충전소로 복귀합니다.`;
+    if (!confirm(msg)) return;
+    try {
+      const res = await fetch(`${API}/api/robots/remote/force-return-all`, { method: "POST" });
+      if (!res.ok) {
+        alert("전체 강제 종료 요청 실패");
+      }
+    } catch {
+      alert("연결 오류로 요청 실패");
+    }
+  };
 
   if (activeJobs.length === 0) return null;
 
   return (
     <div style={{ padding: 12, borderBottom: "1px solid var(--border-color)" }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "var(--text-muted)" }}>
-        작업 중인 로봇 ({activeJobs.length}대)
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        marginBottom: 8, gap: 8,
+      }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>
+          작업 중인 로봇 ({activeJobs.length}대)
+        </span>
+        {activeJobs.length >= 2 && (
+          <button
+            title={`실행 중인 ${activeJobs.length}대 모두 강제 종료 (각자 충전소 복귀)`}
+            onClick={handleForceReturnAll}
+            style={{
+              padding: "5px 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              background: "#d9534f",
+              color: "white",
+              border: "none",
+              borderRadius: 4,
+              cursor: "pointer",
+              letterSpacing: "0.02em",
+            }}
+          >
+            ■ 전체 강제 종료
+          </button>
+        )}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {activeJobs.map((job) => (

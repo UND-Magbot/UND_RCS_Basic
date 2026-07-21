@@ -775,9 +775,9 @@ def api_resume_robot(robot_ip: str):
 
 @router.post("/remote/force-return/{robot_ip}")
 def api_force_return(robot_ip: str, db: Session = Depends(get_db)):
-    """강제 종료 — 현재 위치에서 잭 업 → 랙 위치 복귀 → 충전소 도킹.
+    """강제 종료 — 충전소 도킹까지 수행. 리프팅 로봇은 잭 업 → 랙 위치 보관을 먼저 거친다.
     별도 thread 로 전체 절차를 수행하며 즉시 응답."""
-    from app.services.jack_service import force_return_and_dock
+    from app.services.jack_service import force_return_and_dock, _robot_supports_jack
     from app.services.thread_utils import safe_thread
 
     robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
@@ -789,7 +789,59 @@ def api_force_return(robot_ip: str, db: Session = Depends(get_db)):
     ).start()
     from app.crud.activity_log import log_activity
     log_activity("user", "force_return_request", f"강제 종료 요청: {robot_ip}", source="api_force_return")
-    return {"ok": True, "message": "강제 종료 시작 — 랙 보관 후 충전소 복귀합니다"}
+    msg = ("강제 종료 시작 — 랙 보관 후 충전소 복귀합니다"
+           if _robot_supports_jack(robot_ip)
+           else "강제 종료 시작 — 충전소로 복귀합니다")
+    return {"ok": True, "message": msg}
+
+
+@router.post("/remote/force-return-all")
+def api_force_return_all(db: Session = Depends(get_db)):
+    """전체 강제 종료 — 현재 작업 중인 모든 로봇에 대해 force-return 을 병렬 발송.
+    각 로봇마다 별도 thread 로 force_return_and_dock 실행. 즉시 응답.
+    """
+    from app.services.jack_service import (
+        force_return_and_dock, get_all_job_status, _robot_supports_jack,
+    )
+    from app.services.thread_utils import safe_thread
+    from app.crud.activity_log import log_activity
+
+    active = get_all_job_status()  # {robot_ip: {...}}
+    # 유휴/완료 상태는 제외
+    IGNORE = {"idle", "done", ""}
+    target_ips = [
+        ip for ip, st in (active or {}).items()
+        if str(st.get("status", "")).lower() not in IGNORE
+    ]
+
+    if not target_ips:
+        return {"ok": True, "count": 0, "targets": [], "message": "작업 중인 로봇이 없습니다"}
+
+    # 각 로봇 정보 조회 + thread 발송
+    ip_to_id = {}
+    for ip in target_ips:
+        r = db.query(Robot).filter(Robot.ip_address == ip).first()
+        ip_to_id[ip] = (r.id if r else None, r.name if r else ip)
+
+    for ip, (rid, _name) in ip_to_id.items():
+        safe_thread(
+            target=force_return_and_dock,
+            args=(ip, rid),
+            name=f"force-return-all-{ip}",
+        ).start()
+
+    names = ", ".join(nm for (_id, nm) in ip_to_id.values())
+    log_activity(
+        "user", "force_return_all_request",
+        f"전체 강제 종료 요청: {len(target_ips)}대 [{names}]",
+        source="api_force_return_all",
+    )
+    return {
+        "ok": True,
+        "count": len(target_ips),
+        "targets": [{"ip": ip, "robot_id": rid, "name": nm} for ip, (rid, nm) in ip_to_id.items()],
+        "message": f"{len(target_ips)}대 강제 종료 시작",
+    }
 
 
 @router.post("/remote/relocalize/{robot_ip}")

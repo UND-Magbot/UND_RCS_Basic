@@ -214,6 +214,32 @@ def consume_paused_job(robot_ip: str) -> dict | None:
     return _paused_route_jobs.pop(robot_ip, None)
 
 
+def _get_robot_type(robot_ip: str) -> str:
+    """로봇 타입 조회 (lifting / serving ...). 조회 실패 시 lifting 폴백."""
+    from app.database import SessionLocal
+    from app.models.robot import Robot
+    db = SessionLocal()
+    try:
+        robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+        return (robot.robot_type if robot and robot.robot_type else "lifting")
+    except Exception as e:
+        logger.warning(f"[jack_service] {robot_ip} robot_type 조회 실패: {e}")
+        return "lifting"
+    finally:
+        db.close()
+
+
+def _robot_supports_jack(robot_ip: str) -> bool:
+    """잭(리프팅) 장치가 있는 로봇인지 — rack_pickup 허용 여부로 판단."""
+    from app.constants.robot_types import is_work_mode_allowed
+    return is_work_mode_allowed(_get_robot_type(robot_ip), "rack_pickup")
+
+
+def _default_work_mode_for_robot(robot_ip: str) -> str:
+    """진행 중 작업 정보가 없을 때 쓸 work_mode — 로봇 타입에서 유추."""
+    return "rack_pickup" if _robot_supports_jack(robot_ip) else "simple_move"
+
+
 def force_return_and_dock(robot_ip: str, robot_id: int | None = None):
     """강제 종료 — 현재 진행 중 작업을 중단하고 충전소 도킹까지 수행.
 
@@ -227,9 +253,22 @@ def force_return_and_dock(robot_ip: str, robot_id: int | None = None):
     """
     from app.services.scheduler import _return_to_charger
 
-    # work_mode 캡쳐 — stop_robot_job 전에 메타에서 읽어둠 (작업 스레드가 finally 에서 pop 할 수 있어 선캡쳐)
+    # work_mode 캡쳐 — stop_robot_job 전에 읽어둠 (작업 스레드가 finally 에서 pop 할 수 있어 선캡쳐)
+    # 우선순위: 진행 중 작업 메타 → job_status → 로봇 타입
+    # 유휴 상태에서 강제 종료를 누르면 메타가 비어있음. 이때 rack_pickup 으로 폴백하면
+    # 잭이 없는 서빙 로봇도 잭 업 + 랙 위치(standby POI) 이동을 타버린다.
     meta = _active_route_jobs.get(robot_ip) or {}
-    work_mode = (meta.get("work_mode") or "rack_pickup")
+    work_mode = meta.get("work_mode") or (_job_status.get(robot_ip) or {}).get("work_mode")
+    if not work_mode:
+        work_mode = _default_work_mode_for_robot(robot_ip)
+
+    # 잭이 없는 로봇(서빙 등)은 어떤 경우에도 잭 조작을 하지 않는다.
+    if not _robot_supports_jack(robot_ip):
+        if work_mode != "simple_move":
+            logger.info(f"[force_return] {robot_ip} 잭 미지원 로봇 — work_mode "
+                        f"{work_mode} → simple_move 로 보정")
+        work_mode = "simple_move"
+
     is_rack_pickup = (work_mode == "rack_pickup")
     is_delivery_no_rack = (work_mode == "delivery_no_rack")
 

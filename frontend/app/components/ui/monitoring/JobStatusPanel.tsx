@@ -136,6 +136,27 @@ export function JobStatusPanel() {
 
   const [notification, setNotification] = useState<string | null>(null);
 
+  const handleForceReturnAll = async () => {
+    const jobs = Object.entries(activeJobs);
+    if (jobs.length === 0) return;
+    const names = jobs.map(([ip, j]) => (j as any).route ? `${ip} (${(j as any).route})` : ip).join(", ");
+    const msg = `전체 강제 종료하시겠습니까?\n\n대상: ${jobs.length}대\n${names}\n\n각 로봇의 작업 종류에 따라 랙 보관 / 잭 내림 후 충전소로 복귀합니다.`;
+    if (!confirm(msg)) return;
+    try {
+      const res = await fetch(`${API}/api/robots/remote/force-return-all`, { method: "POST" });
+      if (res.ok) {
+        setNotification(`전체 강제 종료 시작 (${jobs.length}대)`);
+        setTimeout(() => setNotification(null), 3000);
+      } else {
+        setNotification("전체 강제 종료 실패");
+        setTimeout(() => setNotification(null), 3000);
+      }
+    } catch {
+      setNotification("연결 오류");
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
   const handleForceReturn = async (ip: string, workMode?: string) => {
     let msg = "강제 종료하시겠습니까?\n현재 작업을 중단하고 곧바로 충전소로 복귀합니다.";
     if (workMode === "rack_pickup") {
@@ -187,7 +208,32 @@ export function JobStatusPanel() {
       {/* 진행 중인 작업 */}
       {jobEntries.length > 0 ? (
         <div className="job-status-panel__section">
-          <h4 className="job-status-panel__subtitle">진행 중</h4>
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+          }}>
+            <h4 className="job-status-panel__subtitle" style={{ margin: 0 }}>
+              진행 중 ({jobEntries.length}대)
+            </h4>
+            {jobEntries.length >= 2 && (
+              <button
+                title={`실행 중인 ${jobEntries.length}대 모두 강제 종료 (각자 충전소 복귀)`}
+                onClick={handleForceReturnAll}
+                style={{
+                  padding: "5px 10px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  background: "#d9534f",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  letterSpacing: "0.02em",
+                }}
+              >
+                ■ 전체 강제 종료
+              </button>
+            )}
+          </div>
           {jobEntries.map(([ip, job]) => {
             const progress = job.total_steps > 0
               ? Math.round((job.current_step / job.total_steps) * 100)
