@@ -214,7 +214,7 @@ export function JobStatusPanel() {
             <h4 className="job-status-panel__subtitle" style={{ margin: 0 }}>
               진행 중 ({jobEntries.length}대)
             </h4>
-            {jobEntries.length >= 2 && (
+            {jobEntries.length >= 1 && (
               <button
                 title={`실행 중인 ${jobEntries.length}대 모두 강제 종료 (각자 충전소 복귀)`}
                 onClick={handleForceReturnAll}
@@ -230,7 +230,7 @@ export function JobStatusPanel() {
                   letterSpacing: "0.02em",
                 }}
               >
-                ■ 전체 강제 종료
+                {jobEntries.length >= 2 ? `■ 전체 강제 종료 (${jobEntries.length}대)` : "■ 강제 종료"}
               </button>
             )}
           </div>

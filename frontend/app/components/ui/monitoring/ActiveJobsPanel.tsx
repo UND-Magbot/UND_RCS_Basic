@@ -170,7 +170,7 @@ export function ActiveJobsPanel({ liveRobots, areaId }: Props) {
         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-muted)" }}>
           작업 중인 로봇 ({activeJobs.length}대)
         </span>
-        {activeJobs.length >= 2 && (
+        {activeJobs.length >= 1 && (
           <button
             title={`실행 중인 ${activeJobs.length}대 모두 강제 종료 (각자 충전소 복귀)`}
             onClick={handleForceReturnAll}
@@ -186,7 +186,7 @@ export function ActiveJobsPanel({ liveRobots, areaId }: Props) {
               letterSpacing: "0.02em",
             }}
           >
-            ■ 전체 강제 종료
+            {activeJobs.length >= 2 ? `■ 전체 강제 종료 (${activeJobs.length}대)` : "■ 강제 종료"}
           </button>
         )}
       </div>

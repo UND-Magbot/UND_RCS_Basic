@@ -19,7 +19,19 @@
       "Bash(python -m py_compile BackEnd/app/robot_api/robot_convoy_service.py)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(python -c \"from app.main import app; print\\(''OK''\\)\")",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(git -C c:/Users/myckh/Desktop/프로젝트/RCS-Basic show --stat 87ae03b)",
+      "Bash(python -c \"import docx, matplotlib; print\\('docx+mpl OK'\\)\")",
+      "Bash(where mmdc *)",
+      "Bash(where dot *)",
+      "Bash(where npx *)",
+      "Bash(python docs/generate_rack_flow_docx.py)",
+      "PowerShell(Get-ChildItem \"c:\\\\Users\\\\myckh\\\\Desktop\\\\프로젝트\\\\RCS-Basic\\\\docs\" -Recurse -File | Select-Object Name, @{n='KB';e={[math]::Round\\($_.Length/1KB,1\\)}})",
+      "Bash(gh api *)",
+      "WebSearch",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }
