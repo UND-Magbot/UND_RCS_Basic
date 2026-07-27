@@ -1110,14 +1110,9 @@ def run_route_job(
                 wtype = wp["waypoint_type"]
                 wait_sec = wp.get("wait_sec", 0)
 
-                # 이동 — simple_move 는 도착 정확도 1cm 검증 + 최대 2회 재이동
+                # 이동 — 원래 로직: standard 이동만 (도착 검증/미세보정 비활성)
                 _notify("moving", f"[{i+1}/{total_steps}] {name} 이동 중...", i+1)
-                if work_mode == "simple_move":
-                    result = _move_with_accuracy_verify(
-                        ip, name, wp["x"], wp["y"], wp.get("ori", 0),
-                    )
-                else:
-                    result = safe_move(ip, "standard", wp["x"], wp["y"], wp.get("ori", 0), timeout=120)
+                result = safe_move(ip, "standard", wp["x"], wp["y"], wp.get("ori", 0), timeout=120)
                 if result["state"] != "succeeded":
                     msg = f"{name} 이동 실패: {result.get('fail_message', '')}"
                     log_activity("robot", "move_error", msg, source="jack_service")
@@ -1180,14 +1175,9 @@ def run_route_job(
                         jack_up(ip)
                         _interruptible_sleep(ip, JACK_WAIT_SEC)
 
-                    # 이동 — simple_move 는 도착 정확도 1cm 검증 + 최대 2회 재이동
+                    # 이동 — 원래 로직: standard 이동만 (도착 검증/미세보정 비활성)
                     _notify("moving", f"{next_poi['name']} 이동 중...", 2 if is_delivery else 1)
-                    if not is_delivery:  # = simple_move (delivery_no_rack 아니면 simple_move 만 남음)
-                        result = _move_with_accuracy_verify(
-                            ip, next_poi["name"], next_poi["x"], next_poi["y"], next_poi.get("ori", 0),
-                        )
-                    else:
-                        result = safe_move(ip, "standard", next_poi["x"], next_poi["y"], next_poi.get("ori", 0), timeout=120)
+                    result = safe_move(ip, "standard", next_poi["x"], next_poi["y"], next_poi.get("ori", 0), timeout=120)
                     if result["state"] != "succeeded":
                         msg = f"{next_poi['name']} 이동 실패: {result.get('fail_message', '')}"
                         log_activity("robot", "move_error", msg, source="jack_service")
