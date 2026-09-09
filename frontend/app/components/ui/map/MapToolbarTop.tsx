@@ -18,6 +18,8 @@ export function MapToolbarTop({
   onToolChange,
   onChargingPile,
   onCurrentPos,
+  onBarcode,
+  showBarcode = true,
 }: MapToolbarTopProps) {
   return (
     <>
@@ -58,11 +60,11 @@ export function MapToolbarTop({
             </button>
           ))}
 
-          {/* 충전소 — 로봇 현재 위치에 즉시 생성 */}
+          {/* 충전소 — 로봇을 pile 에 완전히 도킹시킨 상태에서 클릭 */}
           <button
             className="map-toolbar-top__item"
             onClick={onChargingPile}
-            title="로봇 현재 위치에 충전소 자동 생성"
+            title="로봇을 충전소에 완전히 도킹시킨 상태에서 클릭하세요. 로봇 pose 를 도킹 위치로 저장하고 sync 시 pile 좌표를 자동 계산합니다."
           >
             <span className="map-toolbar-top__item-icon">⚡</span>
             충전소
@@ -77,6 +79,18 @@ export function MapToolbarTop({
             <span className="map-toolbar-top__item-icon">◎</span>
             현 위치
           </button>
+
+          {/* 바코드 — 로봇이 AutoXing 바코드 마커 위에 정렬된 상태에서 등록 */}
+          {showBarcode && (
+            <button
+              className="map-toolbar-top__item"
+              onClick={onBarcode}
+              title="로봇을 AutoXing 바코드 마커 위에 정렬시킨 상태에서 클릭하세요. 로봇 pose 를 바코드 위치로 저장하고 sync 시 로봇이 감지·재정위에 활용합니다."
+            >
+              <span className="map-toolbar-top__item-icon">▦</span>
+              바코드
+            </button>
+          )}
         </div>
       </div>
     </>

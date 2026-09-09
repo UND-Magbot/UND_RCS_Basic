@@ -298,13 +298,22 @@ def _return_to_charger(robot_ip: str, wp_list: list[dict]):
             logger.warning(f"[scheduler] {std_label} 예외: {e} — charge 단계로 직접 진행")
         _time.sleep(2)
 
-        # 2단계: charge로 도킹 (target_ori 명시, 재시도)
+        # 1.5단계: 재정위 — barcode overlay 있으면 바코드 기반, 없으면 point-cloud alignment 폴백
+        try:
+            from app.services.jack_service import _relocalize_before_charge
+            _relocalize_before_charge(robot_ip, charger["name"])
+        except Exception as e:
+            logger.warning(f"[scheduler] 재정위 훅 예외: {e}")
+
+        # 2단계: charge로 도킹 (target_ori 명시, 재시도 5회)
+        # 도킹 후 pose 검증(_verify_charge_dock) 으로 좌우 편차 로깅 + 안전장치.
         for attempt in range(5):
             try:
                 move_id = create_move(robot_ip, "charge", cx, cy, cyaw, charge_retry_count=3)
                 wait_move(robot_ip, move_id, timeout=120)
+                from app.services.jack_service import _verify_charge_dock, clear_job_status
+                _verify_charge_dock(robot_ip, charger["name"], cx, cy, cyaw)
                 logger.info(f"[scheduler] 충전소 도킹 완료: {charger['name']}")
-                from app.services.jack_service import clear_job_status
                 clear_job_status(robot_ip)
                 break
             except RuntimeError:

@@ -77,6 +77,53 @@ router = APIRouter(prefix="/api/map", tags=["맵 관리"])
 
 # ── helper ────────────────────────────────────────────────────
 
+def _call_robot_with_wait(func, *args, max_wait_seconds: int = 120, interval: int = 8,
+                          description: str = "robot API", **kwargs):
+    """로봇 부팅/서비스 재시작 중 발생하는 5xx/timeout/connection error 를 최대
+    max_wait_seconds 동안 반복 재시도한다. 정상 응답 시 즉시 결과 반환.
+
+    - 재시도 대상: HTTPError(502/503/504), Timeout, ConnectionError
+    - 그 외 예외는 즉시 전파 (권한/요청 오류는 재시도 무의미)
+    """
+    import time as _time
+    from requests.exceptions import HTTPError as _HTTPError, Timeout as _Timeout, ConnectionError as _ConnError
+    start = _time.time()
+    last_err: Exception | None = None
+    attempt = 0
+    while _time.time() - start < max_wait_seconds:
+        attempt += 1
+        try:
+            return func(*args, **kwargs)
+        except _HTTPError as e:
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            if status_code in (502, 503, 504):
+                last_err = e
+                logger.info(f"[wait] {description}: HTTP {status_code} (attempt {attempt}) → {interval}s 대기")
+                _time.sleep(interval)
+                continue
+            raise
+        except (_Timeout, _ConnError) as e:
+            last_err = e
+            logger.info(f"[wait] {description}: {type(e).__name__} (attempt {attempt}) → {interval}s 대기")
+            _time.sleep(interval)
+            continue
+    raise last_err if last_err else RuntimeError(f"{description}: 대기 시간 초과 ({max_wait_seconds}s)")
+
+
+def _post_and_raise(url, **kwargs):
+    """http_requests.post + raise_for_status. _call_robot_with_wait 로 감싸기 위한 헬퍼."""
+    r = http_requests.post(url, **kwargs)
+    r.raise_for_status()
+    return r
+
+
+def _patch_and_raise(url, **kwargs):
+    """http_requests.patch + raise_for_status."""
+    r = http_requests.patch(url, **kwargs)
+    r.raise_for_status()
+    return r
+
+
 def _find_secret(robot_ip: str) -> str:
     return DEFAULT_SECRET
 
@@ -124,7 +171,9 @@ def _update_robots_area(db: Session, area_id: str):
     db.commit()
 
 
-DOCKING_OFFSET = 0.3  # POI(로봇 도킹 위치) 기준 충전기는 yaw 반대 방향(뒤쪽)으로 오프셋
+# 충전소 POI(로봇 도킹 완료 pose) 기준 pile 은 yaw 반대 방향(뒤쪽)으로 오프셋.
+# 값은 로봇 모델의 charge_contact.pose_2d.y 절댓값 = 로봇 body 중심~pile 거리.
+# 실시간 조회 + 폴백은 app.constants.charge_offsets 참조.
 
 
 def _correct_map_grid_origin(db: Session, map_id: int) -> bool:
@@ -218,12 +267,18 @@ def _correct_map_grid_origin(db: Session, map_id: int) -> bool:
         return False
 
 
-def _build_charging_overlay_features(charging_pois: list) -> list[dict]:
+def _build_charging_overlay_features(charging_pois: list, charge_offset: float) -> list[dict]:
     """충전소 POI 목록을 로봇 오버레이용 GeoJSON Feature 리스트로 변환.
 
     각 충전소마다 2개의 Feature를 생성:
-    - 충전소 (type "9"): 충전기 위치
-    - 도킹 포인트 (type "36"): 로봇이 도킹하는 위치 (충전소 yaw 방향 0.9m 앞)
+    - 충전소 (type "9"): 충전기(pile) 실제 위치
+    - 도킹 포인트 (type "36"): 로봇이 도킹하는 pose (POI 좌표 그대로)
+
+    poi.has_barcode == True 인 경우 추가로:
+    - 바코드 (type "37"): pile 좌표와 동일 (충전기 표면에 부착된 마커)
+
+    charge_offset: 로봇 body 중심~pile 거리 (m). 로봇 모델의 charge_contact.pose_2d.y 절댓값.
+                    (crawler_heavy=0.5033, 그 외 대체로 0.369)
     """
     features = []
     for poi in charging_pois:
@@ -236,14 +291,14 @@ def _build_charging_overlay_features(charging_pois: list) -> list[dict]:
             yaw_deg = poi.angle * 180.0 / math.pi
         charger_yaw = str(int(round(yaw_deg)))  # 정수 문자열 ("180", "90" 등)
 
-        # POI = 로봇 도킹 중심, 충전기는 yaw 반대 방향(로봇 뒤쪽 = 벽쪽)으로 오프셋
+        # POI = 로봇 도킹 완료 pose, 충전기 pile 은 yaw 반대 방향(로봇 뒤쪽 = 벽쪽)으로 오프셋
         yaw_rad = math.radians(yaw_deg)
-        # 도킹 포인트 = POI 위치 그대로 (로봇 도킹 시 중심)
+        # 도킹 포인트 = POI 위치 그대로 (로봇 도킹 시 body 중심)
         dock_x = poi.world_x
         dock_y = poi.world_y
-        # 충전기 = POI 기준 yaw 반대 방향으로 DOCKING_OFFSET만큼 뒤
-        charger_x = poi.world_x - DOCKING_OFFSET * math.cos(yaw_rad)
-        charger_y = poi.world_y - DOCKING_OFFSET * math.sin(yaw_rad)
+        # 충전기 pile = POI 기준 yaw 반대 방향으로 charge_offset(=body-to-pile 거리)만큼 뒤
+        charger_x = poi.world_x - charge_offset * math.cos(yaw_rad)
+        charger_y = poi.world_y - charge_offset * math.sin(yaw_rad)
         raw_dock_yaw = int(round((yaw_deg + 180) % 360))
         dock_yaw = str(360 if raw_dock_yaw == 0 else raw_dock_yaw)  # 0° → "360" (1SSS 방식)
 
@@ -285,6 +340,60 @@ def _build_charging_overlay_features(charging_pois: list) -> list[dict]:
             },
         })
 
+        # 충전기에 바코드 마커 부착됨 → pile 좌표에 barcode overlay(type 37) 자동 생성
+        if bool(getattr(poi, "has_barcode", False)):
+            features.append({
+                "id": uuid.uuid4().hex[:24],
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [charger_x, charger_y],
+                },
+                "properties": {
+                    "barcodeId": poi_name,          # 사용자가 지정한 충전소 이름(C1 등) 을 barcode_id 로 사용
+                    "mapOverlay": True,
+                    "name": poi_name,
+                    "type": "37",
+                    "yaw": charger_yaw,
+                },
+            })
+
+    return features
+
+
+def _build_barcode_overlay_features(barcode_pois: list) -> list[dict]:
+    """바코드 POI 목록을 로봇 오버레이용 GeoJSON Feature 리스트로 변환.
+
+    AutoXing overlay type 37 (barcode). 로봇이 barcode 감지 시
+    `/services/start_global_positioning` 등으로 pose 재보정에 활용.
+
+    바코드 POI 는 로봇이 barcode 위에 정렬된 상태에서 등록되므로
+    world_x, world_y 는 barcode 물리 중심 좌표, angle 은 barcode yaw.
+    name 은 barcode_id (물리 마커에 인쇄된 식별자, 예: "D2_29").
+    """
+    features = []
+    for poi in barcode_pois:
+        feat_id = uuid.uuid4().hex[:24]
+        yaw_deg = 0.0
+        if poi.angle is not None:
+            yaw_deg = poi.angle * 180.0 / math.pi
+        barcode_yaw = str(int(round(yaw_deg)))
+        barcode_id = (poi.name or "").strip() or feat_id[:8]
+        features.append({
+            "id": feat_id,
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [poi.world_x, poi.world_y],
+            },
+            "properties": {
+                "barcodeId": barcode_id,
+                "mapOverlay": True,
+                "name": barcode_id,
+                "type": "37",
+                "yaw": barcode_yaw,
+            },
+        })
     return features
 
 
@@ -992,11 +1101,13 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
     overlay_synced = False
     overlay_error = None
     jack_pois = []
+    BARCODE_TYPES = {"37"}     # 바코드 (start_global_positioning 활용)
     try:
         # 1) 로봇 기존 오버레이 읽기 (robot_map_id 우선, 없으면 current-map)
         existing_other = []       # 관리 외 feature
         existing_charging = []    # 기존 충전소 feature (DB에 없으면 보존용)
         existing_firewall = []    # 기존 가상벽 feature (DB에 없으면 보존용)
+        existing_barcode = []     # 기존 바코드 feature (DB에 없으면 보존용)
         try:
             overlay_read_map_id = effective_robot_map_id
             if not overlay_read_map_id:
@@ -1022,12 +1133,15 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                                 existing_charging.append(feat)
                             elif feat_type in FIREWALL_TYPES:
                                 existing_firewall.append(feat)
+                            elif feat_type in BARCODE_TYPES:
+                                existing_barcode.append(feat)
                             elif feat_type == "34":
                                 pass  # Shelves Point는 DB에서 새로 생성하므로 기존 것 제외
                             else:
                                 existing_other.append(feat)
                         logger.info(f"[sync] 기존 오버레이: 충전소={len(existing_charging)} "
-                                    f"가상벽={len(existing_firewall)} 기타={len(existing_other)}")
+                                    f"가상벽={len(existing_firewall)} 바코드={len(existing_barcode)} "
+                                    f"기타={len(existing_other)}")
         except Exception as e:
             logger.warning(f"[sync] 기존 오버레이 읽기 실패 (새로 구성): {e}")
 
@@ -1035,8 +1149,13 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
         new_charging = []
         charging_pois = get_charging_pois(db, map_id)
         if charging_pois:
-            new_charging = _build_charging_overlay_features(charging_pois)
-            logger.info(f"[sync] 충전소 POI {len(charging_pois)}개 → Feature {len(new_charging)}개 (DB)")
+            from app.constants.charge_offsets import fetch_charge_contact_offset
+            charge_offset = fetch_charge_contact_offset(
+                robot_ip, fallback_model=(target_robot.model if target_robot else None)
+            )
+            new_charging = _build_charging_overlay_features(charging_pois, charge_offset)
+            logger.info(f"[sync] 충전소 POI {len(charging_pois)}개 → Feature {len(new_charging)}개 "
+                        f"(charge_offset={charge_offset:.4f}m)")
         else:
             new_charging = existing_charging
             logger.info(f"[sync] 충전소 POI DB에 없음 → 기존 {len(existing_charging)}개 보존")
@@ -1053,6 +1172,17 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
         else:
             new_firewall = existing_firewall
             logger.info(f"[sync] 가상벽 DB에 없음 → 기존 {len(existing_firewall)}개 보존")
+
+        # 바코드 (type 37) — start_global_positioning 활용
+        from app.crud.map import get_barcode_pois
+        new_barcode = []
+        barcode_pois = get_barcode_pois(db, map_id)
+        if barcode_pois:
+            new_barcode = _build_barcode_overlay_features(barcode_pois)
+            logger.info(f"[sync] 바코드 POI {len(barcode_pois)}개 → Feature {len(new_barcode)}개 (DB)")
+        else:
+            new_barcode = existing_barcode
+            logger.info(f"[sync] 바코드 POI DB에 없음 → 기존 {len(existing_barcode)}개 보존")
 
         # 3) jack/standby 타입 POI → Shelves Point overlay 생성 (type=34, subtype=rack)
         new_shelves_points = []
@@ -1089,12 +1219,13 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                 })
             logger.info(f"[sync] 잭킹 POI {len(jack_pois)}개 → Shelves Point {len(new_shelves_points)}개")
 
-        # 4) 병합: 기타 + 충전소 + 가상벽 + Shelves Point
-        merged = existing_other + new_charging + new_firewall + new_shelves_points
+        # 4) 병합: 기타 + 충전소 + 가상벽 + 바코드 + Shelves Point
+        merged = existing_other + new_charging + new_firewall + new_barcode + new_shelves_points
         overlay_data["features"] = merged
         overlay_synced = True
         logger.info(f"[sync] 오버레이 병합 완료: 기타={len(existing_other)} + 충전소={len(new_charging)} "
-                     f"+ 가상벽={len(new_firewall)} + Shelves Point={len(new_shelves_points)} = {len(merged)}")
+                     f"+ 가상벽={len(new_firewall)} + 바코드={len(new_barcode)} "
+                     f"+ Shelves Point={len(new_shelves_points)} = {len(merged)}")
     except Exception as e:
         overlay_error = str(e)
         logger.error(f"[sync] 오버레이 처리 실패: {e}")
@@ -1112,9 +1243,9 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                 build_rack_specs_for_map, build_rack_specs_for_robot_model,
                 collect_rack_sizes_in_map, spec_name_for_robot_model,
             )
-            sizes = collect_rack_sizes_in_map(db, saved_map_id)
+            sizes = collect_rack_sizes_in_map(db, map_id)
             if sizes:
-                _specs_list = build_rack_specs_for_map(db, saved_map_id)
+                _specs_list = build_rack_specs_for_map(db, map_id)
                 _tag = f"map sizes={sorted(sizes)}"
             else:
                 # 맵에 rack_size 지정된 POI 가 없으면 로봇 모델 기준 폴백
@@ -1122,10 +1253,13 @@ def api_sync_map_to_robot(map_id: int, body: dict, db: Session = Depends(get_db)
                 _model = _target_robot.model if _target_robot else None
                 _specs_list = build_rack_specs_for_robot_model(_model)
                 _tag = f"model={_model} spec={spec_name_for_robot_model(_model)} (fallback)"
-            http_requests.patch(
+            _call_robot_with_wait(
+                _patch_and_raise,
                 f"http://{robot_ip}:8090/system/settings/user",
+                max_wait_seconds=60, interval=6,
+                description=f"rack.specs PATCH → {robot_ip}",
                 headers={"Authorization": f"Secret {target_secret}"},
-                json={"rack.specs": _specs_list}, timeout=5,
+                json={"rack.specs": _specs_list}, timeout=10,
             )
             logger.info(f"[sync] rack.specs 자동 설정 완료 → {robot_ip} ({_tag}, count={len(_specs_list)})")
         except Exception as e:
@@ -1422,7 +1556,12 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
     charging_features = []
     charging_pois = get_charging_pois(db, map_id)
     if charging_pois:
-        charging_features = _build_charging_overlay_features(charging_pois)
+        from app.constants.charge_offsets import fetch_charge_contact_offset
+        target_robot = db.query(Robot).filter(Robot.ip_address == robot_ip).first()
+        charge_offset = fetch_charge_contact_offset(
+            robot_ip, fallback_model=(target_robot.model if target_robot else None)
+        )
+        charging_features = _build_charging_overlay_features(charging_pois, charge_offset)
 
     # DB에서 가상벽 overlay
     fw_features = []
@@ -1433,6 +1572,13 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
     ).all()
     if fw_polys:
         fw_features = _build_firewall_overlay_features(fw_polys)
+
+    # DB에서 바코드 overlay (type 37)
+    from app.crud.map import get_barcode_pois
+    barcode_features = []
+    barcode_pois = get_barcode_pois(db, map_id)
+    if barcode_pois:
+        barcode_features = _build_barcode_overlay_features(barcode_pois)
 
     # DB에서 jack/standby POI → Shelves Point overlay (type=34, subtype=rack)
     shelves_features = []
@@ -1497,23 +1643,32 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
             old_overlays = _json.loads(r_map.json().get("overlays", "{}"))
             for feat in old_overlays.get("features", []):
                 feat_type = str(feat.get("properties", {}).get("type", ""))
-                # 충전소, 가상벽, Shelves Point 제외 → 나머지 보존
-                if feat_type not in CHARGING_TYPES and feat_type != "1" and feat_type != "34":
+                # 충전소, 가상벽, 바코드, Shelves Point 제외 → 나머지 보존
+                if (feat_type not in CHARGING_TYPES and feat_type != "1"
+                        and feat_type != "34" and feat_type != "37"):
                     existing_other.append(feat)
     except Exception as e:
         logger.warning(f"[sync-overlays] 기존 overlay 읽기 실패: {e}")
 
     # 병합
-    merged = existing_other + charging_features + fw_features + shelves_features
+    merged = existing_other + charging_features + fw_features + barcode_features + shelves_features
     overlay_data = {"type": "FeatureCollection", "features": merged}
     overlay_json = _json.dumps(overlay_data)
 
     # PATCH → 대상 맵에 overlay 적용 + current-map 재선택
+    # 로봇이 부팅/재시작 중이면 503 반환할 수 있으므로 최대 180초까지 대기 재시도
     try:
-        patch_map_by_id(robot_ip, target_secret, target_map_id, {"overlays": overlay_json})
+        _call_robot_with_wait(
+            patch_map_by_id, robot_ip, target_secret, target_map_id, {"overlays": overlay_json},
+            max_wait_seconds=180, interval=10,
+            description=f"overlay PATCH → {robot_ip} (map {target_map_id})",
+        )
         # current-map 재선택 → 로봇이 overlay 리로드
-        http_requests.post(
+        _call_robot_with_wait(
+            _post_and_raise,
             f"http://{robot_ip}:8090/chassis/current-map",
+            max_wait_seconds=120, interval=8,
+            description=f"current-map POST → {robot_ip}",
             headers={"Authorization": f"Secret {target_secret}"},
             json={"map_id": target_map_id}, timeout=10,
         )
@@ -1538,10 +1693,13 @@ def api_sync_overlays_to_robot(map_id: int, body: dict, db: Session = Depends(ge
                 _model = _target_robot.model if _target_robot else None
                 _specs_list = build_rack_specs_for_robot_model(_model)
                 _tag = f"model={_model} spec={spec_name_for_robot_model(_model)} (fallback)"
-            http_requests.patch(
+            _call_robot_with_wait(
+                _patch_and_raise,
                 f"http://{robot_ip}:8090/system/settings/user",
+                max_wait_seconds=60, interval=6,
+                description=f"rack.specs PATCH → {robot_ip}",
                 headers={"Authorization": f"Secret {target_secret}"},
-                json={"rack.specs": _specs_list}, timeout=5,
+                json={"rack.specs": _specs_list}, timeout=10,
             )
             logger.info(f"[sync-overlays] rack.specs 자동 설정 완료 → {robot_ip} ({_tag}, count={len(_specs_list)})")
         except Exception as e:
@@ -1788,7 +1946,6 @@ def api_relocalize_robots(body: dict, db: Session = Depends(get_db)):
             # 위치재조정 — 충전기 도킹 상태 기준. charging_id 우선.
             poi = None
             poi_kind = ""
-            use_docking_offset = False
 
             if robot.charging_id:
                 poi = db.query(MapPOI).filter(
@@ -1796,7 +1953,6 @@ def api_relocalize_robots(body: dict, db: Session = Depends(get_db)):
                     MapPOI.is_active == True,
                 ).first()
                 poi_kind = "충전소"
-                use_docking_offset = True
 
             if not poi and robot.standby_id:
                 poi = db.query(MapPOI).filter(
@@ -1804,7 +1960,6 @@ def api_relocalize_robots(body: dict, db: Session = Depends(get_db)):
                     MapPOI.is_active == True,
                 ).first()
                 poi_kind = "랙 위치"
-                use_docking_offset = False
 
             if not poi:
                 result["message"] = "충전소 또는 랙 위치가 지정되지 않았습니다."
@@ -1823,16 +1978,11 @@ def api_relocalize_robots(body: dict, db: Session = Depends(get_db)):
 
             yaw_rad = poi.angle if poi.angle is not None else 0.0
 
-            if use_docking_offset:
-                # 충전소: yaw 방향으로 0.9m 앞, 충전소를 바라보는 방향
-                target_x = poi.world_x + DOCKING_OFFSET * math.cos(yaw_rad)
-                target_y = poi.world_y + DOCKING_OFFSET * math.sin(yaw_rad)
-                target_yaw = yaw_rad + math.pi
-            else:
-                # 대기지점: 정확한 좌표, POI 각도 그대로
-                target_x = poi.world_x
-                target_y = poi.world_y
-                target_yaw = yaw_rad
+            # 충전소 POI 좌표는 이제 로봇 도킹 완료 pose 그대로 저장됨 (충전소/대기 동일 처리).
+            # pile 위치는 sync 시 charge_offset 로 자동 계산되므로 여기선 offset 불필요.
+            target_x = poi.world_x
+            target_y = poi.world_y
+            target_yaw = yaw_rad
 
             set_chassis_pose(robot_ip, secret, {
                 "position": [target_x, target_y, 0],

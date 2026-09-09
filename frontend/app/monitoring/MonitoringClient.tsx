@@ -537,12 +537,13 @@ export function MonitoringClient({ initialDateTime }: Props) {
         // 랙 위치(standby) 만 보관된 랙의 사이즈로 마커 크기 분기.
         // 작업 위치(jack) 는 어떤 사이즈의 랙이든 들어올 수 있으므로 기본 크기(S600) 로 표시.
         if (p.type === "standby" && mapMeta && mapMeta.grid_resolution > 0) {
-          const rackSize = (p.rackSize ?? p.rack_size) as ("S600" | "S300" | "LG" | undefined);
+          const rackSize = (p.rackSize ?? p.rack_size) as ("S600" | "S300" | "LG" | "LG2" | undefined);
           // 사이즈별 실측치 (rack.specs 와 일치)
           const dims: Record<string, [number, number]> = {
             S300: [0.73, 0.74],
             S600: [0.83, 0.87],
             LG:   [0.70, 0.50],
+            LG2:  [0.665, 0.60],
           };
           const [RACK_W, RACK_D] = dims[rackSize ?? "S600"] ?? dims.S600;
           poiData.rackWidthPx = RACK_W / mapMeta.grid_resolution;

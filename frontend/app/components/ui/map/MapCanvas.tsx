@@ -416,6 +416,35 @@ export function MapCanvas({
                     className={circleClass}
                     strokeWidth={1}
                   />
+                ) : poi.type === "barcode" ? (
+                  (() => {
+                    const angle = poi.angle != null ? -poi.angle * (180 / Math.PI) + 90 : 0;
+                    return (
+                      <g transform={`translate(${poi.x}, ${poi.y}) rotate(${angle})`}>
+                        <rect
+                          x={-4}
+                          y={-4}
+                          width={8}
+                          height={8}
+                          fill="rgba(52, 152, 219, 0.35)"
+                          stroke={isSelected || isLineStart ? "#fff" : "#2980b9"}
+                          strokeWidth={isSelected || isLineStart ? 1 : 0.8}
+                          rx={0.5}
+                        />
+                        {/* 바코드 줄무늬 (수직) */}
+                        {[-2.5, -1, 0.5, 2].map((x, i) => (
+                          <rect
+                            key={i}
+                            x={x}
+                            y={-3}
+                            width={0.5}
+                            height={6}
+                            fill="rgba(255,255,255,0.85)"
+                          />
+                        ))}
+                      </g>
+                    );
+                  })()
                 ) : poi.type === "jack" ? (
                   (() => {
                     const res = mapMeta?.grid_resolution || 0.05;

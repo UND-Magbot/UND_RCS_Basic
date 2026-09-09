@@ -85,6 +85,7 @@ const POI_NAME_PREFIX: Record<string, string> = {
   jack: "J",
   standby: "R",   // Rack 위치
   waypoint: "W",  // Waypoint
+  barcode: "B",   // Barcode (AutoXing overlay type 37)
 };
 
 /** 같은 타입의 기존 POI 이름에서 'PrefixN' 패턴을 찾아 max+1 번호의 이름을 생성. */
@@ -143,6 +144,7 @@ export default function MapPage() {
   const [relocalizeModalOpen, setRelocalizeModalOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [connectedRobot, setConnectedRobot] = useState<ConnectedRobot>(null);
+  const [robotCaps, setRobotCaps] = useState<{ supportsBarcodeGp: boolean } | null>(null);
 
   // Mapping flow
   const [mappingSetupOpen, setMappingSetupOpen] = useState(false);
@@ -335,6 +337,7 @@ export default function MapPage() {
                 address: p.address ?? undefined,
                 dockingRadius: p.dockingRadius ?? undefined,
                 rackSize: p.rackSize ?? undefined,
+                hasBarcode: p.hasBarcode ?? undefined,
               }));
               const loadedLines = elems.lines.map((l: any) => ({
                 id: l.id,
@@ -792,22 +795,21 @@ export default function MapPage() {
       });
     }
 
-    // currentPos / currentPosJack / chargingPile: immediately create POI at robot position
-    if ((tool === "currentPos" || tool === "currentPosJack" || tool === "chargingPile") && robotPose && mapMeta && mapMeta.grid_resolution > 0 && mapImageSize) {
+    // currentPos / currentPosJack / chargingPile / barcode: immediately create POI at robot position
+    if ((tool === "currentPos" || tool === "currentPosJack" || tool === "chargingPile" || tool === "barcode") && robotPose && mapMeta && mapMeta.grid_resolution > 0 && mapImageSize) {
       const isCharging = tool === "chargingPile";
       const isJack = tool === "currentPosJack";
+      const isBarcode = tool === "barcode";
 
-      // 충전소: 로봇 도킹 위치에서 yaw 방향(앞쪽=충전기 반대) 0.2m 앞에 POI 생성
-      //         → 도킹 시 로봇이 충전기에 너무 가까이 붙어서 긁는 것 방지
-      // 일반/잭킹 POI: 로봇 현재 위치 그대로 사용
-      const DOCKING_OFFSET = -0.1;
+      // 로봇 현재 pose 를 그대로 POI 좌표로 저장.
+      // 충전소: 사용자가 로봇을 pile 에 완전히 도킹시킨 상태에서 이 버튼을 누르면
+      //         해당 pose 가 도킹 위치가 되고, sync 시 백엔드가 로봇 모델별
+      //         charge_contact 오프셋으로 실제 pile 좌표를 자동 계산한다.
+      // 바코드: 로봇을 물리 마커 위에 정렬시킨 상태에서 누르면 그 pose 가 마커 위치가 되며,
+      //         sync 시 overlay type 37 로 등록되어 로봇 재정위(global positioning)에 활용된다.
       const angle = robotPose.ori;
-      const worldX = isCharging
-        ? robotPose.pos[0] - DOCKING_OFFSET * Math.cos(angle)
-        : robotPose.pos[0];
-      const worldY = isCharging
-        ? robotPose.pos[1] - DOCKING_OFFSET * Math.sin(angle)
-        : robotPose.pos[1];
+      const worldX = robotPose.pos[0];
+      const worldY = robotPose.pos[1];
 
       // 월드 좌표 → SVG 좌표 변환
       const ipx = (worldX - mapMeta.grid_origin_x) / mapMeta.grid_resolution;
@@ -818,6 +820,7 @@ export default function MapPage() {
       let poiType: POI["type"];
       if (isCharging) poiType = "charging";
       else if (isJack) poiType = "jack";
+      else if (isBarcode) poiType = "barcode";
       else poiType = "waypoint";
       const poiName: string = nextPoiName(pois, poiType);
 
@@ -841,6 +844,14 @@ export default function MapPage() {
   const handleRobotConnect = useCallback((sn: string, name: string, ip: string) => {
     setConnectedRobot({ sn, name, ip });
     setConnectModalOpen(false);
+    // capability 조회 (실패해도 무시 — 바코드 버튼만 숨겨짐)
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
+    fetch(`${apiUrl}/api/robots/${ip}/capabilities`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) setRobotCaps({ supportsBarcodeGp: !!d.supportsBarcodeGp });
+      })
+      .catch(() => {});
   }, []);
 
   // ── Zoom Controls ──
@@ -1115,6 +1126,7 @@ export default function MapPage() {
             loadType: p.load_type || "normal", robotSns: p.robot_sns ? JSON.parse(p.robot_sns) : [],
             dockingRadius: p.docking_radius ?? null,
             rackSize: p.rackSize ?? p.rack_size ?? undefined,
+            hasBarcode: p.hasBarcode ?? p.has_barcode ?? undefined,
           })));
           setLines(elems.lines?.map((l: any) => ({
             id: l.id, fromId: l.from_poi_id, toId: l.to_poi_id,
@@ -1216,6 +1228,8 @@ export default function MapPage() {
                 onToolChange={handleToolChange}
                 onChargingPile={() => handleToolChange("chargingPile")}
                 onCurrentPos={() => handleToolChange("currentPos")}
+                onBarcode={() => handleToolChange("barcode")}
+                showBarcode={!connectedRobot || (robotCaps?.supportsBarcodeGp ?? true)}
               />
 
               {/* Floating Panel: Right */}

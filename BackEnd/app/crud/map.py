@@ -361,6 +361,7 @@ def save_map_elements(db: Session, map_id: int, payload: dict) -> dict:
                 docking_radius=p.get("dockingRadius"),
                 area_name=p.get("areaName"),
                 rack_size=p.get("rackSize"),
+                has_barcode=bool(p.get("hasBarcode", False)),
             )
             db.add(poi)
             db.flush()  # id 확정
@@ -470,6 +471,7 @@ def get_map_elements(db: Session, map_id: int) -> dict:
             "dockingRadius": p.docking_radius,
             "areaName": p.area_name,
             "rackSize": p.rack_size,
+            "hasBarcode": bool(p.has_barcode),
         })
 
     line_list = []
@@ -515,6 +517,25 @@ def get_charging_pois(db: Session, map_id: int):
         .filter(
             MapPOI.map_id == map_id,
             MapPOI.poi_type == "charging",
+            MapPOI.is_active == True,
+            MapPOI.world_x.isnot(None),
+            MapPOI.world_y.isnot(None),
+        )
+        .all()
+    )
+
+
+def get_barcode_pois(db: Session, map_id: int):
+    """바코드(barcode) 타입 POI 중 월드 좌표가 유효한 것만 반환.
+
+    AutoXing overlay type 37 로 변환되어 로봇에 sync 됨.
+    로봇은 barcode 감지 시 자기 pose 를 정확히 재보정 (start_global_positioning) → 도킹 정밀도 개선.
+    """
+    return (
+        db.query(MapPOI)
+        .filter(
+            MapPOI.map_id == map_id,
+            MapPOI.poi_type == "barcode",
             MapPOI.is_active == True,
             MapPOI.world_x.isnot(None),
             MapPOI.world_y.isnot(None),

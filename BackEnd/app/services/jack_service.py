@@ -470,16 +470,19 @@ def robot_patch(ip: str, path: str, json_body: dict) -> dict:
 
 
 # ── 도착 위치 정확도 검증 (simple_move 전용) ────────────────────────
-POSITION_ACCURACY_M = 0.01        # 도착 오차 목표 (1cm)
-POSITION_MAX_RETRIES = 2          # 오차 초과 시 최대 재이동 횟수
-POSE_WS_TIMEOUT = 3.0             # /tracked_pose 조회 최대 대기 (s)
+POSITION_ACCURACY_M = 0.01         # 도착 오차 목표 (1cm)
+POSITION_TWIST_MAX_M = 0.10        # twist 미세보정 최대 오차 (10cm 초과 시 to_unload_point 재이동)
+POSITION_MAX_RETRIES = 2           # to_unload_point 재이동 최대 횟수 (큰 오차용)
+POSITION_TWIST_MAX_ITER = 6        # twist 반복 최대 (한 iter 당 0.4~0.8s)
+TWIST_LINEAR_SPEED = 0.03          # 미세보정 전진 속도 (m/s) — 매우 낮게
+TWIST_ANGULAR_SPEED = 0.15         # 미세보정 회전 속도 (rad/s)
+TWIST_LATERAL_TOLERANCE_M = 0.02   # 옆으로 벗어난 성분 허용 (초과면 to_unload_point 로 fallback)
+POSE_WS_TIMEOUT = 3.0              # /tracked_pose 조회 최대 대기 (s)
 
 
-def _get_current_pose(robot_ip: str, timeout: float = POSE_WS_TIMEOUT) -> tuple[float, float] | None:
-    """로봇 실좌표 (x, y) 를 /tracked_pose WS 로 1회 조회. 실패 시 None.
-
-    HyunDai 프로젝트의 _get_robot_pose 를 참고 — try/finally 로 socket close 보장.
-    """
+def _get_current_pose_full(robot_ip: str, timeout: float = POSE_WS_TIMEOUT
+                            ) -> tuple[float, float, float] | None:
+    """로봇 실좌표 (x, y, yaw) 를 /tracked_pose WS 로 1회 조회. 실패 시 None."""
     from websocket import create_connection  # type: ignore
     import json as _json
     ws = None
@@ -501,8 +504,9 @@ def _get_current_pose(robot_ip: str, timeout: float = POSE_WS_TIMEOUT) -> tuple[
                 continue
             if pkt.get("topic") == "/tracked_pose":
                 pos = pkt.get("pos")
+                ori = pkt.get("ori", 0.0)
                 if isinstance(pos, (list, tuple)) and len(pos) >= 2:
-                    return float(pos[0]), float(pos[1])
+                    return float(pos[0]), float(pos[1]), float(ori)
     except Exception as e:
         logger.warning(f"[pose_verify] {robot_ip} pose 조회 실패: {e}")
     finally:
@@ -514,62 +518,363 @@ def _get_current_pose(robot_ip: str, timeout: float = POSE_WS_TIMEOUT) -> tuple[
     return None
 
 
+def _get_current_pose(robot_ip: str, timeout: float = POSE_WS_TIMEOUT) -> tuple[float, float] | None:
+    """로봇 실좌표 (x, y) 만 반환하는 얇은 래퍼 (하위호환)."""
+    p = _get_current_pose_full(robot_ip, timeout)
+    return (p[0], p[1]) if p is not None else None
+
+
+def _send_twist_pulse(ip: str, linear_v: float, angular_v: float, duration_s: float) -> bool:
+    """WebSocket /twist 명령을 100ms 주기로 duration 만큼 반복 발송 후 정지.
+
+    AutoXing 은 twist watchdog 이 있어 100~200ms 안에 재발송 없으면 자동 정지 →
+    조이스틱 방식과 동일하게 반복 발송 필요. 마지막에 0속도 발송으로 확실히 정지.
+    """
+    from websocket import create_connection  # type: ignore
+    import json as _json
+    ws = None
+    try:
+        ws = create_connection(f"ws://{ip}:8090/ws/v2/topics", timeout=2.0)
+        deadline = time.time() + duration_s
+        payload = _json.dumps({
+            "topic": "/twist",
+            "linear_velocity": float(linear_v),
+            "angular_velocity": float(angular_v),
+        })
+        while time.time() < deadline:
+            ws.send(payload)
+            time.sleep(0.1)
+        # 정지 명령 (watchdog 만료 전에 확실히 0속도)
+        ws.send(_json.dumps({
+            "topic": "/twist",
+            "linear_velocity": 0.0,
+            "angular_velocity": 0.0,
+        }))
+        return True
+    except Exception as e:
+        logger.warning(f"[twist_adjust] {ip} twist 발송 실패: {e}")
+        return False
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+
+def _fine_adjust_by_twist(ip: str, name: str, tx: float, ty: float,
+                           tolerance: float = POSITION_ACCURACY_M,
+                           threshold: float = POSITION_TWIST_MAX_M) -> tuple[bool, float]:
+    """오차 벡터를 로봇 좌표계로 투영해 twist 로 미세보정. (성공 여부, 최종 오차 m).
+
+    - forward 성분: 로봇 heading 방향 앞/뒤 이동량 → 직접 전/후진 twist
+    - lateral 성분: TWIST_LATERAL_TOLERANCE_M 이내면 forward 만 보정, 초과면 fallback 요청 (False)
+    - 최대 POSITION_TWIST_MAX_ITER 회 반복, iter 당 최대 이동 = 오차 forward 성분(< 5cm)
+    - 오차 > threshold (10cm) 이면 즉시 fallback (False)
+    """
+    import math as _m
+    final_err = float("inf")
+    for it in range(POSITION_TWIST_MAX_ITER):
+        pose = _get_current_pose_full(ip)
+        if pose is None:
+            return False, final_err
+        rx, ry, r_yaw = pose
+        dx, dy = tx - rx, ty - ry
+        err = _m.hypot(dx, dy)
+        final_err = err
+        if err <= tolerance:
+            return True, err
+        if err > threshold:
+            # 이미 크게 벗어남 → path planner 로 fallback
+            return False, err
+        # 로봇 좌표계로 투영
+        c, s = _m.cos(r_yaw), _m.sin(r_yaw)
+        forward = dx * c + dy * s      # 로봇 앞(+)/뒤(-)
+        lateral = -dx * s + dy * c     # 로봇 왼(+)/오른(-)
+        if abs(lateral) > TWIST_LATERAL_TOLERANCE_M:
+            # 옆으로 크게 벗어남 → 차동구동으로 미세보정 부적합, path planner 로 fallback
+            logger.info(
+                f"[twist_adjust] {ip} {name} lateral 오차 {lateral*100:.1f}cm "
+                f"> {TWIST_LATERAL_TOLERANCE_M*100:.1f}cm — fallback"
+            )
+            return False, err
+        # forward 방향으로 짧게 이동 (1회 최대 5cm)
+        step = min(abs(forward), 0.05)
+        duration = max(0.4, step / TWIST_LINEAR_SPEED)   # 최소 0.4s (watchdog 유지)
+        duration = min(duration, 1.5)                     # 최대 1.5s (안전)
+        lv = _m.copysign(TWIST_LINEAR_SPEED, forward)
+        logger.info(
+            f"[twist_adjust] {ip} {name} iter {it+1}: "
+            f"err={err*100:.1f}cm forward={forward*100:.1f}cm lateral={lateral*100:.1f}cm "
+            f"→ lv={lv:.03f}m/s × {duration:.2f}s"
+        )
+        ok = _send_twist_pulse(ip, lv, 0.0, duration)
+        if not ok:
+            return False, err
+        # 관성 안정화 대기
+        time.sleep(0.3)
+    return final_err <= tolerance, final_err
+
+
 def _move_with_accuracy_verify(ip: str, name: str, x: float, y: float, ori: float,
                                 target_accuracy: float = POSITION_ACCURACY_M,
                                 max_retries: int = POSITION_MAX_RETRIES) -> dict:
-    """simple_move 용 정밀 이동 + 도착 오차 검증 + 재시도.
+    """simple_move 정밀 이동 + 하이브리드 보정.
 
-    흐름: safe_move (target_accuracy 포함) → /tracked_pose 로 실좌표 조회
-         → 오차 > target_accuracy 이면 같은 좌표로 최대 max_retries 회 재이동.
-    최종 오차가 초과되어도 결과는 그대로 반환 (activity_log 에 경고 기록, 흐름은 진행).
+    흐름:
+      1) safe_move("standard", target_accuracy) — 로봇 펌웨어 자체 정확도 제어
+      2) /tracked_pose 로 실좌표 조회 → 오차 계산
+      3) 오차 ≤ 1cm         → OK (즉시 반환)
+         1cm < 오차 ≤ 10cm  → twist 미세보정 (앞/뒤 짧게, 최대 6회)
+         오차 > 10cm        → safe_move("to_unload_point") 자체 정밀 정렬 재이동
+      4) to_unload_point 재이동 후 다시 검증 → 최대 max_retries 회
+      5) 최종 실패 시 activity_log 경고 + 흐름은 진행 (반환)
     """
     from app.crud.activity_log import log_activity
-    last_result: dict = {}
-    for attempt in range(max_retries + 1):
-        # 이동 (로봇 펌웨어 자체가 target_accuracy 이내 도달 시도)
-        last_result = safe_move(ip, "standard", x, y, ori,
-                                target_accuracy=target_accuracy, timeout=120)
-        if last_result.get("state") != "succeeded":
-            return last_result  # 이동 자체 실패 — 후처리 상위에 위임
+    import math as _m
 
-        # 실제 도착 좌표 확인
+    def _log_ok(msg: str):
+        log_activity("robot", "position_accuracy_ok", msg, source="jack_service")
+
+    def _log_warn(msg: str):
+        log_activity("robot", "position_accuracy_warning", msg, source="jack_service")
+
+    # 1차 이동
+    last_result = safe_move(ip, "standard", x, y, ori,
+                            target_accuracy=target_accuracy, timeout=120)
+    if last_result.get("state") != "succeeded":
+        return last_result
+
+    for retry in range(max_retries + 1):
         pose = _get_current_pose(ip)
         if pose is None:
             logger.warning(f"[pose_verify] {ip} {name}: pose 조회 실패 — 검증 skip")
             return last_result
+        err = _m.hypot(pose[0] - x, pose[1] - y)
+        err_cm = err * 100
 
-        import math as _m
-        dx, dy = pose[0] - x, pose[1] - y
-        err = _m.hypot(dx, dy)
-        err_mm = err * 1000
-        threshold_mm = target_accuracy * 1000
-
+        # ── (a) 이미 1cm 이내
         if err <= target_accuracy:
-            if attempt > 0:
-                log_activity(
-                    "robot", "position_accuracy_ok",
-                    f"{name} 재시도 {attempt}회 후 정확도 확보 (오차 {err_mm:.0f}mm ≤ {threshold_mm:.0f}mm)",
-                    source="jack_service",
-                )
-            logger.info(f"[pose_verify] {ip} {name} OK — 오차 {err_mm:.0f}mm ≤ {threshold_mm:.0f}mm")
+            if retry > 0:
+                _log_ok(f"{name} 재이동 {retry}회 후 정확도 확보 (오차 {err*1000:.0f}mm)")
+            logger.info(f"[pose_verify] {ip} {name} OK — 오차 {err*1000:.0f}mm")
             return last_result
 
-        # 오차 초과
-        logger.warning(
-            f"[pose_verify] {ip} {name} 오차 {err_mm:.0f}mm > {threshold_mm:.0f}mm "
-            f"(시도 {attempt+1}/{max_retries+1})"
-        )
-        if attempt >= max_retries:
-            log_activity(
-                "robot", "position_accuracy_warning",
+        # ── (b) 1cm 초과 ~ 10cm: twist 미세보정
+        if err <= POSITION_TWIST_MAX_M:
+            logger.info(f"[pose_verify] {ip} {name} 오차 {err_cm:.1f}cm — twist 미세보정 시작")
+            ok, final_err = _fine_adjust_by_twist(ip, name, x, y, target_accuracy)
+            if ok:
+                _log_ok(f"{name} twist 미세보정 후 정확도 확보 (오차 {final_err*1000:.0f}mm)")
+                logger.info(f"[twist_adjust] {ip} {name} OK — 오차 {final_err*1000:.0f}mm")
+                return last_result
+            # twist 실패 (lateral 크거나 발송 실패) → to_unload_point fallback 로 넘어감
+            logger.warning(
+                f"[twist_adjust] {ip} {name} 미세보정 실패 (오차 {final_err*100:.1f}cm) "
+                f"→ to_unload_point 재이동"
+            )
+            err = final_err  # 최신 오차 반영
+
+        # ── (c) 10cm 초과 또는 twist 실패: to_unload_point 로 정밀 재이동
+        if retry >= max_retries:
+            _log_warn(
                 f"{name} 도착 오차 {err*100:.1f}cm > {target_accuracy*100:.1f}cm "
-                f"(재시도 {max_retries}회 후에도 미달성 — 진행)",
-                source="jack_service",
+                f"(재이동 {max_retries}회 후에도 미달성 — 진행)"
             )
             return last_result
-        # 다음 loop 에서 재이동
+        logger.warning(
+            f"[pose_verify] {ip} {name} 오차 {err*100:.1f}cm — to_unload_point 재이동 "
+            f"(재시도 {retry+1}/{max_retries})"
+        )
+        last_result = safe_move(ip, "to_unload_point", x, y, ori,
+                                target_accuracy=target_accuracy, timeout=120)
+        if last_result.get("state") != "succeeded":
+            return last_result
 
     return last_result
+
+
+# ── charge 발행 직전 barcode/point-cloud 재정위 훅 ─────────────────
+# 목적: 사전 접근 POI 도달 후 charge 발행 전에 로봇 self-localization 재보정.
+#       barcode overlay(type 37) 가 있으면 정확한 pose 확보 → 도킹 정밀도 개선.
+#       바코드 없어도 point-cloud alignment 로 폴백 (use_base_map_match 기본 true).
+GLOBAL_POSITIONING_WAIT_TIMEOUT = 6.0   # 결과 대기 (초)
+
+
+def _relocalize_before_charge(ip: str, name: str = "") -> dict:
+    """charge 발행 전 로봇 재정위 시도. 결과 무관 흐름 진행 (예외 없음)."""
+    import json as _json
+    try:
+        r = requests.post(
+            robot_url(ip, "/services/start_global_positioning"),
+            json={"use_barcode": True, "use_base_map_match": True},
+            timeout=5,
+        )
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning(f"[relocalize] {ip} {name} start 요청 실패: {e}")
+        return {"state": "start_failed", "error": str(e)}
+
+    from websocket import create_connection  # type: ignore
+    ws = None
+    result = {"state": "timeout"}
+    try:
+        ws = create_connection(f"ws://{ip}:8090/ws/v2/topics", timeout=3)
+        ws.send(_json.dumps({"enable_topic": "/global_positioning_state"}))
+        ws.settimeout(GLOBAL_POSITIONING_WAIT_TIMEOUT)
+        deadline = time.time() + GLOBAL_POSITIONING_WAIT_TIMEOUT
+        while time.time() < deadline:
+            try:
+                pkt = _json.loads(ws.recv())
+            except Exception:
+                break
+            if pkt.get("topic") != "/global_positioning_state":
+                continue
+            state = pkt.get("state")
+            result = {
+                "state": state,
+                "score": pkt.get("score"),
+                "message": pkt.get("message"),
+            }
+            if state and state not in ("running", "positioning", "pending"):
+                break
+    except Exception as e:
+        logger.warning(f"[relocalize] {ip} {name} WS 조회 예외: {e}")
+        result = {"state": "ws_error", "error": str(e)}
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    state = result.get("state")
+    if state == "succeeded":
+        logger.info(f"[relocalize] {ip} {name} OK — {result.get('message')} score={result.get('score')}")
+    else:
+        logger.info(f"[relocalize] {ip} {name} 결과 {state} — {result.get('message') or result.get('error')}")
+    return result
+
+
+# ── charge 도킹 후 pose 검증 (로깅 위주) ────────────────────────────
+# 관측 목적: 매 도킹 결과를 로봇 좌표계로 분해해 forward/lateral 편차 기록.
+# 사용자가 정말 관심 있는 건 **lateral (좌우) 편차** — 접점 편측 접촉 유발 요인.
+# 재도킹은 오차 매우 큰 경우(20mm 초과)에만 안전장치로 시도.
+CHARGE_LATERAL_OK_MM = 3.0             # 좌우 3mm 이하: 정상
+CHARGE_LATERAL_WARN_MM = 5.0           # 좌우 5mm 초과: warning 로그
+CHARGE_TOTAL_REDOCK_TRIGGER_MM = 20.0  # 총거리 20mm 초과: 재도킹 시도
+CHARGE_REDOCK_MAX_RETRIES = 1          # 재도킹 최대 (안전상 1회로 축소)
+CHARGE_UNDOCK_DISTANCE_M = 0.6
+
+
+def _verify_charge_dock(ip: str, name: str, tx: float, ty: float, tyaw: float,
+                         timeout: int = 120) -> None:
+    """charge move 완료 직후 pose 검증 (로깅 위주, 재도킹은 안전장치).
+
+    - 로봇 pose 를 조회하고 target 대비 forward/lateral 로 분해해서 로그.
+    - lateral 3mm 이하 → OK
+    - lateral 5mm 초과 → warning log (하드웨어 반복 정밀도 한계 근접)
+    - 총 거리 20mm 초과 → 안전장치로 재도킹 1회 시도
+
+    도킹 자체는 이미 성공 처리된 뒤에 호출됨 → 이 함수는 모니터링/안전장치. 예외 안 던짐.
+    """
+    from app.crud.activity_log import log_activity
+    import math as _m
+
+    for retry in range(CHARGE_REDOCK_MAX_RETRIES + 1):
+        pose = _get_current_pose_full(ip)
+        if pose is None:
+            logger.warning(f"[charge_verify] {ip} {name}: pose 조회 실패 — 검증 skip")
+            return
+        rx, ry, ryaw = pose
+        dx, dy = rx - tx, ry - ty
+        err = _m.hypot(dx, dy)
+        # 로봇 좌표계 분해 (tyaw = 도킹 완료 시 로봇 헤딩)
+        c, s = _m.cos(tyaw), _m.sin(tyaw)
+        forward = dx * c + dy * s      # 앞(+)/뒤(-) : pile 접근 방향
+        lateral = -dx * s + dy * c     # 왼쪽(+)/오른쪽(-) : 좌우 편차 (핵심)
+        yaw_err = ((ryaw - tyaw + _m.pi) % (2 * _m.pi)) - _m.pi
+
+        err_mm = err * 1000
+        fwd_mm = forward * 1000
+        lat_mm = lateral * 1000
+        lat_abs_mm = abs(lat_mm)
+        yaw_err_deg = _m.degrees(yaw_err)
+
+        info = (f"오차 {err_mm:.1f}mm (fwd {fwd_mm:+.1f} / lat {lat_mm:+.1f}) "
+                f"yaw {yaw_err_deg:+.2f}°")
+
+        # 정상 (좌우 3mm 이내)
+        if lat_abs_mm <= CHARGE_LATERAL_OK_MM:
+            if retry > 0:
+                log_activity(
+                    "robot", "charge_precision_ok",
+                    f"{name} 재도킹 후 좌우 정렬 확보 — {info}",
+                    source="jack_service",
+                )
+            logger.info(f"[charge_verify] {ip} {name} OK — {info}")
+            return
+
+        # 좌우 3~5mm : 정보 로그만
+        if lat_abs_mm <= CHARGE_LATERAL_WARN_MM:
+            logger.info(f"[charge_verify] {ip} {name} 좌우 편차 5mm 이내 — {info}")
+            log_activity(
+                "robot", "charge_precision_lateral",
+                f"{name} 좌우 편차 {lat_abs_mm:.1f}mm — {info}",
+                source="jack_service",
+            )
+            return
+
+        # 좌우 5mm 초과 (경고)
+        logger.warning(f"[charge_verify] {ip} {name} 좌우 편차 큼 — {info}")
+        log_activity(
+            "robot", "charge_precision_warning",
+            f"{name} 좌우 편차 {lat_abs_mm:.1f}mm 초과 — {info}",
+            source="jack_service",
+        )
+
+        # 총 거리 20mm 초과 시에만 재도킹 (안전장치)
+        if err_mm <= CHARGE_TOTAL_REDOCK_TRIGGER_MM:
+            return
+        if retry >= CHARGE_REDOCK_MAX_RETRIES:
+            log_activity(
+                "robot", "charge_precision_giveup",
+                f"{name} 재도킹 후에도 오차 큼 (진행) — {info}",
+                source="jack_service",
+            )
+            return
+
+        log_activity(
+            "robot", "charge_precision_redock",
+            f"{name} 총 오차 {err_mm:.1f}mm — 재도킹 시도 ({retry+1}/{CHARGE_REDOCK_MAX_RETRIES})",
+            source="jack_service",
+        )
+
+        # 재도킹: 이격 → 대기 → 재발행 (원래 파라미터 그대로)
+        try:
+            cancel_current_move(ip)
+        except Exception:
+            pass
+        time.sleep(1.0)
+        undock_x = tx + CHARGE_UNDOCK_DISTANCE_M * _m.cos(tyaw)
+        undock_y = ty + CHARGE_UNDOCK_DISTANCE_M * _m.sin(tyaw)
+        try:
+            mid = create_move(ip, "standard", undock_x, undock_y, tyaw, target_accuracy=0.05)
+            wait_move(ip, mid, timeout=45)
+        except Exception as e:
+            logger.warning(f"[charge_verify] {ip} 이격 이동 실패: {e}")
+            return
+        time.sleep(2.0)
+        try:
+            mid = create_move(ip, "charge", tx, ty, tyaw, charge_retry_count=3)
+            r = wait_move(ip, mid, timeout=timeout)
+            if r.get("state") != "succeeded":
+                logger.warning(f"[charge_verify] {ip} 재도킹 실패: {r.get('fail_message')}")
+                return
+        except Exception as e:
+            logger.warning(f"[charge_verify] {ip} 재도킹 예외: {e}")
+            return
+        # loop 계속
 
 
 def create_move(ip: str, move_type: str, target_x: float, target_y: float,
@@ -1364,7 +1669,13 @@ def run_route_job(
                 except Exception as e:
                     logger.warning(f"[charge-approach] {ip} {_label} 예외: {e} — 직접 도킹")
                 time.sleep(2)
-                # 2단계: 도킹
+                # 1.5단계: 재정위 (barcode 있으면 정밀, 없으면 point-cloud fallback)
+                try:
+                    _relocalize_before_charge(ip, name)
+                except Exception as e:
+                    logger.warning(f"[charge-approach] {ip} 재정위 훅 예외: {e}")
+
+                # 2단계: 도킹 — 원래 로직 (charge_retry_count=3)
                 _notify("charging", f"[{i+1}/{total_steps}] {name} 충전소 도킹 중...", i+1)
                 move_id = create_move(ip, "charge", cx, cy, cyaw, charge_retry_count=3)
                 result = wait_move(ip, move_id, timeout=120)
@@ -1372,6 +1683,8 @@ def run_route_job(
                     msg = f"{name} 충전 도킹 실패: {result.get('fail_message', '')}"
                     log_activity("robot", "dock_error", msg, source="jack_service")
                     return _fail(msg)
+                # 도킹 후 pose 검증 — 좌우 편차 로깅 + 심각한 오차만 재도킹
+                _verify_charge_dock(ip, name, cx, cy, cyaw)
 
                 if wait_sec > 0:
                     _notify("waiting", f"{name} 대기 중 ({wait_sec}초)...", i+1)

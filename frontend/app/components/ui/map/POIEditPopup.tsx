@@ -7,12 +7,14 @@ const poiTypes: { value: POIType; label: string }[] = [
   { value: "waypoint", label: "경유지" },
   { value: "jack", label: "작업 위치" },
   { value: "standby", label: "랙 위치" },
+  { value: "barcode", label: "바코드" },
 ];
 
 const rackSizes: { value: RackSize; label: string; dims: string }[] = [
   { value: "S600", label: "S600 (큰 랙)", dims: "0.83 × 0.87m" },
   { value: "S300", label: "S300 (작은 랙)", dims: "0.73 × 0.74m" },
   { value: "LG", label: "LG (longjack용)", dims: "0.70 × 0.50m" },
+  { value: "LG2", label: "LG2 (longjack용 2번째)", dims: "0.665 × 0.60m" },
 ];
 
 export function POIEditPopup({
@@ -26,6 +28,7 @@ export function POIEditPopup({
   const [type, setType] = useState<POIType>(poi.type);
   const [angle, setAngle] = useState(poi.angle != null ? String(poi.angle) : "");
   const [rackSize, setRackSize] = useState<RackSize>(poi.rackSize ?? "S600");
+  const [hasBarcode, setHasBarcode] = useState<boolean>(!!poi.hasBarcode);
 
   const handleTypeChange = (newType: POIType) => {
     setType(newType);
@@ -41,6 +44,7 @@ export function POIEditPopup({
       type,
       angle: parsedAngle != null && !isNaN(parsedAngle) ? parsedAngle : undefined,
       rackSize: type === "standby" ? rackSize : undefined,
+      hasBarcode: type === "charging" ? hasBarcode : undefined,
     });
   };
 
@@ -121,6 +125,26 @@ export function POIEditPopup({
                   </label>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* 바코드 부착 체크 — 충전소(charging) 일 때만 */}
+          {type === "charging" && (
+            <div className="poi-edit-panel__section">
+              <label className="poi-edit-panel__radio" style={{ cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={hasBarcode}
+                  onChange={(e) => setHasBarcode(e.target.checked)}
+                />
+                <span>
+                  이 충전기에 <b>AutoXing 바코드 마커</b>가 부착됨
+                  <br />
+                  <span style={{ opacity: 0.6, fontSize: 12 }}>
+                    체크 시 sync 때 pile 좌표에 barcode overlay(type 37) 자동 생성 → 도킹 정밀도 개선
+                  </span>
+                </span>
+              </label>
             </div>
           )}
         </div>

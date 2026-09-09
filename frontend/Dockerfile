@@ -27,3 +27,4 @@ COPY --from=builder /app/public ./public
 EXPOSE 3002
 
 CMD ["npm", "start", "--", "-p", "3002"]
+ 

@@ -34,10 +34,22 @@ RACK_SPECS: dict[str, dict] = {
         "foot_radius": 0.025,
         "cargo_to_jack_front_edge_min_distance": 0.05,
     },
-    # 🆕 LG — longjack 로봇 전용 랙 (2026-07 실측: align_with_rack 성공 확인)
+    # LG — longjack 로봇 전용 랙 (2026-07 실측: align_with_rack 성공 확인)
     "LG": {
         "width": 0.70, "depth": 0.50,
-        "margin": [0.02, 0.02, 0.02, 0.02],
+        "margin": [0.05, 0.05, 0.05, 0.05],
+        "alignment": "center",
+        "alignment_margin_back": 0.02,
+        "extra_leg_offset": 0.0,
+        "leg_shape": "round",
+        "leg_size": 0.05,
+        "foot_radius": 0.02,
+        "cargo_to_jack_front_edge_min_distance": 0.05,
+    },
+    # LG2 — longjack 로봇용 2번째 LG 랙 (도면 기준: 다리 중심 665 × 600mm, 캐스터 GDS-100)
+    "LG2": {
+        "width": 0.665, "depth": 0.60,
+        "margin": [0.05, 0.05, 0.05, 0.05],
         "alignment": "center",
         "alignment_margin_back": 0.02,
         "extra_leg_offset": 0.0,

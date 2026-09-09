@@ -1,8 +1,8 @@
-export type MapTool = "select" | "point" | "jackPoint" | "line" | "curveLine" | "polygon" | "del" | "chargingPile" | "currentPos" | "currentPosJack" | "firewall" | "virtualwall";
+export type MapTool = "select" | "point" | "jackPoint" | "line" | "curveLine" | "polygon" | "del" | "chargingPile" | "currentPos" | "currentPosJack" | "barcode" | "firewall" | "virtualwall";
 
-export type POIType = "waypoint" | "standby" | "charging" | "firewall" | "jack";
+export type POIType = "waypoint" | "standby" | "charging" | "firewall" | "jack" | "barcode";
 
-export type RackSize = "S600" | "S300" | "LG";
+export type RackSize = "S600" | "S300" | "LG" | "LG2";
 
 export type LoadType = "normal" | "heavy";
 
@@ -21,6 +21,8 @@ export type POI = {
   address?: string;
   dockingRadius?: number;
   rackSize?: RackSize;
+  /** 충전소(charging) 일 때: 충전기에 AutoXing 바코드 마커가 부착됨 → sync 시 barcode overlay(type 37) 함께 생성 */
+  hasBarcode?: boolean;
 };
 
 export type PathLine = {
@@ -91,6 +93,10 @@ export type MapToolbarTopProps = {
   onChargingPile: () => void;
   /** 즉시 실행 — 로봇 현재 위치에 일반 POI 자동 생성 */
   onCurrentPos: () => void;
+  /** 즉시 실행 — 로봇 현재 위치에 바코드 POI 자동 생성 */
+  onBarcode: () => void;
+  /** 로봇이 barcode global positioning 지원 여부 (device/info capability) — 미지원 시 바코드 버튼 숨김 */
+  showBarcode?: boolean;
 };
 
 export type MapToolbarLeftProps = {

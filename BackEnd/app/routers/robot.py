@@ -687,6 +687,113 @@ def api_cancel_move(robot_ip: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/remote/start-global-positioning/{robot_ip}")
+def api_start_global_positioning(robot_ip: str, body: dict | None = None):
+    """로봇의 global positioning (self-localization) 재시작 + 결과 대기.
+
+    맵의 바코드(overlay type 37) 나 point-cloud alignment 로 로봇 pose 를 재보정.
+    도킹 정밀도 개선을 위해 charge 발행 전에 호출하면 유리.
+
+    body (선택):
+      { "use_barcode": true, "use_base_map_match": true, "wait_timeout": 8.0 }
+
+    응답:
+      { "state": "succeeded|failed|...", "score": "...", "message": "...", "pose": {...} }
+      (wait_timeout 안에 결과 없으면 state=timeout)
+    """
+    import requests as req
+    import websocket, json as _json, time as _t
+    payload = {}
+    if isinstance(body, dict):
+        if "use_barcode" in body:
+            payload["use_barcode"] = bool(body["use_barcode"])
+        if "use_base_map_match" in body:
+            payload["use_base_map_match"] = bool(body["use_base_map_match"])
+    wait_timeout = float((body or {}).get("wait_timeout", 8.0))
+
+    # 1) start_global_positioning 호출
+    try:
+        r = req.post(
+            f"http://{robot_ip}:8090/services/start_global_positioning",
+            json=payload if payload else None,
+            timeout=5,
+        )
+        r.raise_for_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"start 실패: {e}")
+
+    # 2) /global_positioning_state 결과 대기
+    ws = None
+    result = {"state": "timeout"}
+    try:
+        ws = websocket.create_connection(f"ws://{robot_ip}:8090/ws/v2/topics", timeout=3)
+        ws.send(_json.dumps({"enable_topic": "/global_positioning_state"}))
+        ws.settimeout(wait_timeout)
+        deadline = _t.time() + wait_timeout
+        while _t.time() < deadline:
+            try:
+                pkt = _json.loads(ws.recv())
+            except Exception:
+                break
+            if pkt.get("topic") != "/global_positioning_state":
+                continue
+            state = pkt.get("state")
+            result = {
+                "state": state,
+                "score": pkt.get("score"),
+                "message": pkt.get("message"),
+                "pose": pkt.get("pose"),
+                "needs_confirmation": pkt.get("needs_confirmation"),
+            }
+            # succeeded / failed 등 최종 상태면 종료
+            if state and state not in ("running", "positioning", "pending"):
+                break
+    except Exception as e:
+        result = {"state": "error", "message": str(e)}
+    finally:
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+    return result
+
+
+@router.get("/{robot_ip}/capabilities")
+def api_get_robot_capabilities(robot_ip: str):
+    """로봇 device/info 조회 → 관제에서 활용할 capability 요약.
+
+    반환 예:
+      {
+        "model": "crawler_heavy",
+        "supportsBarcodeGp": true,
+        "supportsCollectingLandmarks": true,
+        "supportsJack": true,
+        ...
+      }
+    """
+    import requests as req
+    try:
+        r = req.get(f"http://{robot_ip}:8090/device/info", timeout=5)
+        r.raise_for_status()
+        d = r.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"device/info 조회 실패: {e}")
+    device = d.get("device") or {}
+    caps = d.get("caps") or {}
+    return {
+        "model": device.get("model"),
+        "sn": device.get("sn"),
+        "axbot_version": d.get("axbot_version"),
+        "supportsBarcodeGp": bool(caps.get("supportsBarcodeGp", False)),
+        "supportsCollectingLandmarks": bool(caps.get("supportsCollectingLandmarks", False)),
+        "supportsJack": bool(caps.get("supportsJack", False)),
+        "supportsDynamicFootprints": bool(caps.get("supportsDynamicFootprints", False)),
+        "supportsFollowTarget": bool(caps.get("supportsFollowTarget", False)),
+        "caps": caps,   # 원본 전체도 함께
+    }
+
+
 
 @router.get("/speed/{robot_ip}")
 def api_get_speed(robot_ip: str, db: Session = Depends(get_db)):
@@ -988,24 +1095,36 @@ def api_dock_to_charger(robot_ip: str, db: Session = Depends(get_db)):
             },
             timeout=5,
         )
-        # 2) charge 명령 — target_ori 명시 (로봇 정렬 후 정확한 충전기 인식)
+        # 2) charge 명령 — 원래 로직 + 도킹 후 pose 검증 (좌우 편차 로깅)
         import threading
+        _cx, _cy, _cyaw, _cname = cx, cy, cyaw, charger.name
         def _then_charge():
             import time as _t
             _t.sleep(8)  # standard 이동 완료 대기
+            # 재정위 훅 — barcode 있으면 정밀, 없으면 point-cloud fallback
             try:
-                req.post(
+                from app.services.jack_service import _relocalize_before_charge
+                _relocalize_before_charge(robot_ip, _cname)
+            except Exception:
+                pass
+            try:
+                r = req.post(
                     f"http://{robot_ip}:8090/chassis/moves",
                     json={
                         "creator": "rcs",
                         "type": "charge",
-                        "target_x": cx,
-                        "target_y": cy,
-                        "target_ori": cyaw,
+                        "target_x": _cx,
+                        "target_y": _cy,
+                        "target_ori": _cyaw,
                         "charge_retry_count": 3,
                     },
                     timeout=5,
                 )
+                move_id = r.json().get("id")
+                from app.services.jack_service import wait_move, _verify_charge_dock
+                if move_id:
+                    wait_move(robot_ip, move_id, timeout=120)
+                    _verify_charge_dock(robot_ip, _cname, _cx, _cy, _cyaw)
             except Exception:
                 pass
         threading.Thread(target=_then_charge, daemon=True).start()

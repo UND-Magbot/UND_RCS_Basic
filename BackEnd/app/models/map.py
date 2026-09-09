@@ -97,6 +97,7 @@ class MapPOI(Base):
     docking_radius = Column(Float, nullable=True)
     area_name = Column(String(200), nullable=True)                             # 소속 영역 이름
     rack_size = Column(String(10), nullable=True)                              # 랙 위치(jack) 일 때: 'S600' / 'S300'
+    has_barcode = Column(Boolean, default=False, nullable=False)               # 충전소(charging) 일 때: 충전기에 AutoXing 바코드 마커 부착됨 → sync 시 barcode overlay(type 37) 도 함께 생성
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
