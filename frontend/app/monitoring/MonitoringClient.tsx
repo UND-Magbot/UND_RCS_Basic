@@ -42,6 +42,7 @@ const MonitoringMap3D = dynamic(
 import type { PoiMarkerData, RobotMarkerData, RouteSegment, WaypointMarkerData } from "@/lib/types/map-markers";
 import { BusinessSelectBox } from "../components/ui/monitoring/BusinessSelectBox";
 import { JackTestPanel } from "../components/ui/monitoring/JackTestPanel";
+import { TowTestPanel } from "../components/ui/monitoring/TowTestPanel";
 import { BatchDispatchPanel } from "../components/ui/monitoring/BatchDispatchPanel";
 import { ActiveJobsPanel } from "../components/ui/monitoring/ActiveJobsPanel";
 import "../components/ui/monitoring/JackTestPanel.css";
@@ -55,43 +56,40 @@ import type { Business } from "@/lib/types/robots";
 import type { MapMeta } from "@/lib/types/map";
 
 function DispatchTabs({ liveRobots, areaId }: { liveRobots: any[]; areaId?: number }) {
-  const [mode, setMode] = useState<"single" | "batch">("single");
+  const [mode, setMode] = useState<"single" | "batch" | "tow" | "rack">("single");
+  const tabs: { key: typeof mode; label: string }[] = [
+    { key: "single", label: "단일" },
+    { key: "batch", label: "배치 (여러 대)" },
+    { key: "tow", label: "견인 테스트" },
+    { key: "rack", label: "랙 주행 테스트" },
+  ];
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* 작업 중 로봇 카드는 단일/배치 모드 무관 공통 표시 */}
       <ActiveJobsPanel liveRobots={liveRobots} areaId={areaId} />
       <div style={{ display: "flex", gap: 4, padding: "8px 12px 0", borderBottom: "1px solid var(--border-color)" }}>
-        <button
-          onClick={() => setMode("single")}
-          style={{
-            background: "transparent",
-            border: "none",
-            padding: "6px 12px",
-            cursor: "pointer",
-            fontSize: 12,
-            borderBottom: mode === "single" ? "2px solid var(--color-primary, #36dfc8)" : "2px solid transparent",
-            color: mode === "single" ? "var(--color-primary, #36dfc8)" : "var(--text-muted)",
-            fontWeight: mode === "single" ? 600 : 400,
-          }}
-        >단일</button>
-        <button
-          onClick={() => setMode("batch")}
-          style={{
-            background: "transparent",
-            border: "none",
-            padding: "6px 12px",
-            cursor: "pointer",
-            fontSize: 12,
-            borderBottom: mode === "batch" ? "2px solid var(--color-primary, #36dfc8)" : "2px solid transparent",
-            color: mode === "batch" ? "var(--color-primary, #36dfc8)" : "var(--text-muted)",
-            fontWeight: mode === "batch" ? 600 : 400,
-          }}
-        >배치 (여러 대)</button>
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setMode(t.key)}
+            style={{
+              background: "transparent",
+              border: "none",
+              padding: "6px 12px",
+              cursor: "pointer",
+              fontSize: 12,
+              borderBottom: mode === t.key ? "2px solid var(--color-primary, #36dfc8)" : "2px solid transparent",
+              color: mode === t.key ? "var(--color-primary, #36dfc8)" : "var(--text-muted)",
+              fontWeight: mode === t.key ? 600 : 400,
+            }}
+          >{t.label}</button>
+        ))}
       </div>
       <div style={{ flex: 1, overflow: "auto" }}>
-        {mode === "single"
-          ? <JackTestPanel liveRobots={liveRobots} areaId={areaId} />
-          : <BatchDispatchPanel liveRobots={liveRobots} areaId={areaId} />}
+        {mode === "single" && <JackTestPanel liveRobots={liveRobots} areaId={areaId} />}
+        {mode === "batch" && <BatchDispatchPanel liveRobots={liveRobots} areaId={areaId} />}
+        {mode === "tow" && <TowTestPanel liveRobots={liveRobots} areaId={areaId} />}
+        {mode === "rack" && <TowTestPanel key="rack" liveRobots={liveRobots} areaId={areaId} variant="rack" />}
       </div>
     </div>
   );
@@ -231,6 +229,11 @@ export function MonitoringClient({ initialDateTime }: Props) {
   const [apiRobotsFull, setApiRobotsFull] = useState<ApiRobotFull[]>([]);
   const [liveRobots, setLiveRobots] = useState<LiveRobot[]>([]);
   const livePollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 이동 목표 폴링 대상 — 오프라인 로봇은 타임아웃(3s)으로 브라우저 연결을 점유하므로 제외
+  const onlineIpsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    onlineIpsRef.current = new Set(liveRobots.filter((r) => r.ONLINE === "Online").map((r) => r.IP));
+  }, [liveRobots]);
 
   const handleDeviceEnableToggle = useCallback((deviceId: string) => {
     if (togglingDeviceId) return;
@@ -750,9 +753,21 @@ export function MonitoringClient({ initialDateTime }: Props) {
     livePollingRef.current = setInterval(fetchLive, 5000);
 
     // 로봇 이동 목표 폴링
+    const targetInflight = new Set<string>();
     const fetchTargets = () => {
       apiRobots.forEach((robot) => {
+        if (!onlineIpsRef.current.has(robot.ip_address) || targetInflight.has(robot.ip_address)) {
+          setRobotTargets((prev) => {
+            if (!prev.has(robot.serial_number) || onlineIpsRef.current.has(robot.ip_address)) return prev;
+            const next = new Map(prev);
+            next.delete(robot.serial_number);
+            return next;
+          });
+          return;
+        }
+        targetInflight.add(robot.ip_address);
         fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/robots/target/${robot.ip_address}`, { cache: "no-store" })
+          .finally(() => targetInflight.delete(robot.ip_address))
           .then((r) => r.json())
           .then((data) => {
             setRobotTargets((prev) => {

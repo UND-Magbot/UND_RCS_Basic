@@ -233,6 +233,7 @@ docker-compose up -d --build
 ### DB 마이그레이션
 ```sql
 ALTER TABLE robots ADD COLUMN max_speed FLOAT DEFAULT 1.2;
+ALTER TABLE map_pois ADD COLUMN has_barcode TINYINT(1) NOT NULL DEFAULT 0;
 ```
 
 ### 접속 주소
